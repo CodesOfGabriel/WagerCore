@@ -51,6 +51,10 @@ func Defaults() Config {
 
 func Load() (Config, error) {
 	cfg := Defaults()
+	if os.Getenv("APP_ENV") == "production" {
+		cfg.OIDCIssuerURL, cfg.OIDCJWKSURL, cfg.OIDCAudience = "", "", ""
+		cfg.SQSEndpoint, cfg.AWSAccessKeyID, cfg.AWSSecretAccessKey = "", "", ""
+	}
 	cfg.DatabaseURL = os.Getenv("DATABASE_URL")
 	for key, destination := range map[string]*string{
 		"APP_ENV": &cfg.Environment, "OIDC_ISSUER_URL": &cfg.OIDCIssuerURL,
@@ -120,12 +124,22 @@ func Load() (Config, error) {
 		if err != nil || parsed.Host == "" || parsed.User != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.RawQuery != "" || parsed.Fragment != "" {
 			return Config{}, errors.New(key + " must be an absolute HTTP URL without credentials, query or fragment")
 		}
+		if cfg.Environment == "production" {
+			host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
+			ip := net.ParseIP(host)
+			if parsed.Scheme != "https" || host == "" || host == "localhost" || strings.HasSuffix(host, ".localhost") || host == "keycloak" || host == "localstack" || (ip != nil && (ip.IsLoopback() || ip.IsUnspecified())) {
+				return Config{}, errors.New(key + " must use HTTPS and a non-local host in production")
+			}
+		}
 	}
-	if cfg.OIDCAudience == "" || cfg.AWSRegion == "" {
+	if strings.TrimSpace(cfg.OIDCAudience) == "" || strings.TrimSpace(cfg.AWSRegion) == "" {
 		return Config{}, errors.New("OIDC_AUDIENCE and AWS_REGION are required")
 	}
 	if (cfg.AWSAccessKeyID == "") != (cfg.AWSSecretAccessKey == "") {
 		return Config{}, errors.New("AWS credentials must be supplied together")
+	}
+	if cfg.Environment == "production" && (strings.EqualFold(strings.TrimSpace(cfg.AWSAccessKeyID), "test") || strings.EqualFold(strings.TrimSpace(cfg.AWSSecretAccessKey), "test")) {
+		return Config{}, errors.New("test AWS credentials are forbidden in production")
 	}
 	switch cfg.WorkerRoles {
 	case "all", "none", "publisher", "consumer", "references":

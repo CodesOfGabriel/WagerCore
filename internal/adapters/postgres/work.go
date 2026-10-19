@@ -8,11 +8,19 @@ import (
 
 	"junglegaming/internal/application"
 	"junglegaming/internal/identifier"
+	"junglegaming/internal/platform/telemetry"
 )
 
 type WorkQueue struct{ pool *pgxpool.Pool }
 
 func NewWorkQueue(pool *pgxpool.Pool) *WorkQueue { return &WorkQueue{pool} }
+
+func (q *WorkQueue) ObservePool(metrics *telemetry.Metrics) {
+	stats := q.pool.Stat()
+	metrics.PoolAcquired.Set(float64(stats.AcquiredConns()))
+	metrics.PoolMax.Set(float64(stats.MaxConns()))
+	metrics.PoolWait.Set(stats.EmptyAcquireWaitTime().Seconds())
+}
 
 type OutboxItem struct {
 	ID, AggregateID, LeaseID string
@@ -63,9 +71,15 @@ func (q *WorkQueue) Published(ctx context.Context, item OutboxItem) error {
 }
 
 func (q *WorkQueue) RetryOutbox(ctx context.Context, item OutboxItem, delay time.Duration) error {
-	_, err := q.pool.Exec(ctx, `UPDATE outbox SET lease_id=NULL,lease_until=NULL,next_attempt_at=clock_timestamp()+$3::interval
-        WHERE event_id=$1 AND lease_id=$2 AND published_at IS NULL`, item.ID, item.LeaseID, delay.String())
-	return databaseError(err)
+	tag, err := q.pool.Exec(ctx, `UPDATE outbox SET lease_id=NULL,lease_until=NULL,next_attempt_at=clock_timestamp()+$3::interval
+        WHERE event_id=$1 AND lease_id=$2 AND lease_until>clock_timestamp() AND published_at IS NULL`, item.ID, item.LeaseID, delay.String())
+	if err != nil {
+		return databaseError(err)
+	}
+	if tag.RowsAffected() != 1 {
+		return application.ErrLeaseLost
+	}
+	return nil
 }
 
 func (q *WorkQueue) ClaimReferences(ctx context.Context, limit int, lease time.Duration) ([]ReferenceItem, error) {
@@ -95,19 +109,26 @@ func (q *WorkQueue) ClaimReferences(ctx context.Context, limit int, lease time.D
 }
 
 func (q *WorkQueue) RetryReference(ctx context.Context, item ReferenceItem, delay time.Duration) error {
-	_, err := q.pool.Exec(ctx, `UPDATE wager_transactions SET lease_id=NULL,lease_until=NULL,
+	tag, err := q.pool.Exec(ctx, `UPDATE wager_transactions SET lease_id=NULL,lease_until=NULL,
         next_retry_at=LEAST(clock_timestamp()+$3::interval,reference_expires_at)
-        WHERE id=$1 AND lease_id=$2 AND status='PENDING_REFERENCE'`, item.ID, item.LeaseID, delay.String())
-	return databaseError(err)
+        WHERE id=$1 AND lease_id=$2 AND lease_until>clock_timestamp() AND status='PENDING_REFERENCE'`, item.ID, item.LeaseID, delay.String())
+	if err != nil {
+		return databaseError(err)
+	}
+	if tag.RowsAffected() != 1 {
+		return application.ErrLeaseLost
+	}
+	return nil
 }
 
 func (q *WorkQueue) OutboxStats(ctx context.Context) (int64, time.Duration, error) {
 	var pending int64
 	var oldest *time.Time
-	err := q.pool.QueryRow(ctx, "SELECT count(*),min(occurred_at) FROM outbox WHERE published_at IS NULL").Scan(&pending, &oldest)
+	var now time.Time
+	err := q.pool.QueryRow(ctx, "SELECT count(*),min(occurred_at),clock_timestamp() FROM outbox WHERE published_at IS NULL").Scan(&pending, &oldest, &now)
 	age := time.Duration(0)
 	if oldest != nil {
-		age = time.Since(*oldest)
+		age = now.Sub(*oldest)
 		if age < 0 {
 			age = 0
 		}

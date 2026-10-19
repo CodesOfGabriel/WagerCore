@@ -4,6 +4,8 @@ Montei a suíte com PostgreSQL, Keycloak e LocalStack reais para verificar o est
 
 Na execução local de 19/10/2026, `make check build`, `make test-integration` e `make test-failover` passaram. O Docker local iniciou saudável com schema na versão 4. Uma demonstração com abertura, BET e WIN por HTTP, nova BET por SQS e replays terminou com saldo `80.00`, quatro lançamentos reconciliados, inbox concluída e nenhuma pendência de publicação.
 
+Na revisão da auditoria, os três comandos passaram novamente, incluindo os novos cenários de lease, schema e carga sustentada. Uma instalação em projeto Docker separado, com volumes novos, também passou em abertura, BET, replay, isolamento e reconciliação. As alterações e evidências dessa revisão estão em [AUDITORIA.md](AUDITORIA.md).
+
 ## Financeiro e autorização
 
 | Teste de integração | Verificação |
@@ -31,6 +33,7 @@ A suíte também mantém os testes de constraints, imutabilidade, limites de `in
 | `TestCrashAfterSQSCommitRedeliversWithoutMovement` | Processo termina antes de remover a mensagem; outro recebe com `receiveCount >= 2`, confirma replay e preserva um único débito |
 | `TestCrashAfterEventPublicationUsesStableSnapshot` | Processo termina antes de confirmar a outbox; outro republica o mesmo ID e bytes, com nova tentativa persistida |
 | `TestMessagingRetentionOrderingAndLeaseFencing` | Lease expirado é reassumido; proprietário antigo não confirma; eventos da mesma carteira não se ultrapassam |
+| `TestRetryLeaseFencing` | Retry exige uma linha alterada por lease válido; reservas expiradas, reassumidas, liberadas e IDs ausentes retornam `ErrLeaseLost`; referência não é agendada além do TTL |
 
 A contagem de envio da outbox é observada nos logs e nas tentativas do banco. A fila FIFO pode suprimir a segunda entrega com o mesmo ID dentro de sua janela; esse comportamento não é tratado como prova de publicação exatamente uma vez. Os consumidores de eventos precisam deduplicar por `eventId`.
 
@@ -42,6 +45,7 @@ A restauração de referências é verificada pelo estado final e pelo único la
 | --- | --- |
 | `TestPostgresOutagePreservesIdempotency` | Banco pausado produz readiness indisponível e `503`; após o retorno, a operação é aplicada uma vez e os eventos são publicados |
 | `TestSQSOutageRetainsCommittedEvents` | Falta de resposta do broker mantém eventos no banco; o publisher retoma sem outro movimento financeiro |
+| `TestSchemaFailureCanBeRetriedAfterRepair` | `42P01`, `42703` e `42883` revertem HTTP e SQS sem consumir a identidade; após o reparo, a mesma operação confirma uma vez e permite replay |
 | `TestPermanentInfrastructureFailureIsAudited` | Erro SQL permanente gera `FAILED`, preserva saldo e ledger, mantém replay terminal e encaminha a mensagem à DLQ |
 | `TestPermanentFailureAtCommitIsAudited` | Falha em constraint adiada reverte carteira, ledger e outbox antes de registrar `FAILED` |
 | `TestPermanentReferenceFailureIsAudited` | Falha permanente na retomada encerra a referência em `FAILED`, sem crédito parcial |
@@ -58,3 +62,7 @@ Esses cenários demonstram processos independentes no mesmo host e broker emulad
 ## Desempenho
 
 Criei um teste de carga com a mesma quantidade de operações em uma instância com cem carteiras, três instâncias com cem carteiras e três instâncias disputando uma carteira. O comando, os parâmetros, as métricas e os resultados medidos estão em [BENCHMARK.md](BENCHMARK.md).
+
+`TestOutboxSustainedLoad` executa os três perfis na integração normal: 60 requisições a 20/s, recuperação em até trinta segundos e conferência de todos os eventos no SQS, com IDs, bytes e ordem por carteira. `TestFinancialLoad`, habilitado pelos benchmarks, mede os mesmos critérios com carga configurável e separa os intervalos HTTP e de publicação integral.
+
+`TestOutboxStatsUseDatabaseClock` exige idade zero para outbox vazia e, com pendências, uma idade entre as leituras anterior e posterior do relógio do PostgreSQL. Assim, a métrica não depende do relógio do host.

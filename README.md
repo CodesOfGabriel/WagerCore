@@ -10,6 +10,7 @@ Implementa `BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK`, abertura interna, referê
 - [Diagnóstico de falhas](docs/DIAGNOSTICO.md)
 - [Cenários e evidências de validação](docs/CENARIOS.md)
 - [Teste de carga e resultados](docs/BENCHMARK.md)
+- [Verificação dos pontos da auditoria](docs/AUDITORIA.md)
 
 ## Ambiente local
 
@@ -104,6 +105,10 @@ A configuração completa está em [.env.example](.env.example). `DATABASE_MAX_C
 
 `OIDC_ISSUER_URL` precisa corresponder ao emissor do token. `OIDC_JWKS_URL` pode usar o endereço interno do Keycloak; isso permite validar no container tokens obtidos pelo host. Para usar AWS, deixe `SQS_ENDPOINT`, `AWS_ACCESS_KEY_ID` e `AWS_SECRET_ACCESS_KEY` vazios e forneça credenciais pela cadeia padrão do SDK, com acesso às filas indicadas na arquitetura.
 
+Com `APP_ENV=production`, os defaults locais de OIDC, SQS e credenciais são removidos. Configure explicitamente `OIDC_ISSUER_URL`, `OIDC_JWKS_URL` e `OIDC_AUDIENCE`; os dois URLs exigem HTTPS e não aceitam loopback nem aliases locais dos emuladores. Deixe `SQS_ENDPOINT` ausente ou vazio para usar o endpoint AWS da região; um endpoint explícito também exige HTTPS e host não local. Credenciais `test` são recusadas. O SDK usa a cadeia padrão da AWS, preservando `AWS_SESSION_TOKEN` e credenciais de roles. Mudar apenas `APP_ENV` no `.env.example` faz a inicialização falhar.
+
+No publisher, `WORKER_INTERVAL` é a pausa dos ciclos sem trabalho ou com falha na reserva. Lotes disponíveis são publicados em sequência, mantendo o limite de concorrência e a ordem por carteira. Consultas de métricas têm um ciclo próprio.
+
 `SIGINT` e `SIGTERM` encerram o HTTP, cancelam os workers e fecham as conexões. Configuração inválida ou dependências indisponíveis impedem a inicialização.
 
 ## Migrations
@@ -146,7 +151,7 @@ Criei `scripts/test-integration.sh` para preparar PostgreSQL em 55432, Keycloak 
 
 Usei esse mesmo script nos alvos `make test-concurrency` e `make test-failover`. Os testes iniciam os próprios processos Go e não dependem da API local. O ambiente de desenvolvimento permanece separado.
 
-`make test-failover` seleciona interrupções, indisponibilidade das dependências, falhas permanentes e shutdown em andamento. `make benchmark` executa a comparação de carga entre uma e três instâncias e grava o relatório em `.local/benchmark.json`.
+`make test-failover` seleciona interrupções, indisponibilidade das dependências, perda de lease, falhas de schema/permanentes e shutdown em andamento. A integração completa também executa uma carga sustentada curta, com drenagem da outbox e conferência dos snapshots no SQS. `make benchmark` compara carga entre uma e três instâncias e grava `.local/benchmark.json`; `make benchmark-e2e` distribui 200 requisições a 20/s e grava `.local/benchmark-e2e.json`. Ambos exigem publicação integral dentro do prazo, além de integridade financeira.
 
 A [documentação dos testes](docs/TESTES.md) detalha os alvos, isolamento, execução de um cenário, falhas esperadas e diagnóstico. A [matriz de cenários](docs/CENARIOS.md) descreve as garantias verificadas. Para investigar falhas durante o uso da aplicação, consulte [DIAGNOSTICO.md](docs/DIAGNOSTICO.md).
 

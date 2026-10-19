@@ -14,7 +14,8 @@ func TestDatabaseFailureClassification(t *testing.T) {
 		want error
 	}{
 		{"23514", application.ErrPermanentInfrastructure}, {"23503", application.ErrPermanentInfrastructure},
-		{"22003", application.ErrPermanentInfrastructure}, {"42P01", application.ErrPermanentInfrastructure},
+		{"22003", application.ErrPermanentInfrastructure}, {"22P02", application.ErrPermanentInfrastructure},
+		{"42P01", application.ErrUnavailable}, {"42703", application.ErrUnavailable}, {"42883", application.ErrUnavailable},
 		{"40001", application.ErrUnavailable}, {"40P01", application.ErrUnavailable},
 		{"57P01", application.ErrUnavailable}, {"08006", application.ErrUnavailable}, {"P0001", application.ErrUnavailable},
 		{"23505", application.ErrConflict},

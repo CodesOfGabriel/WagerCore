@@ -60,7 +60,7 @@ make test-failover
 | Alvo | Seleção |
 | --- | --- |
 | `test-concurrency` | `TestThreeProcessesConcurrentBets` e `TestSQSInboxAndCrossChannelIdempotency` |
-| `test-failover` | Testes com prefixos `Crash`, `ReferenceWorker`, `MessagingRetention`, `AtomicRollback`, `PostgresOutage`, `SQSOutage`, `Permanent` e `Shutdown` |
+| `test-failover` | Testes com prefixos `Crash`, `ReferenceWorker`, `MessagingRetention`, `RetryLease`, `AtomicRollback`, `PostgresOutage`, `SQSOutage`, `SchemaFailure`, `Permanent` e `Shutdown` |
 
 Esses alvos também usam race detector e `-count=1`, com limite de três minutos. São recortes da suíte completa, não verificações adicionais obrigatórias após `make test-integration`.
 
@@ -122,7 +122,9 @@ make test-deps-down
 
 ## Teste de carga
 
-Mantive `TestFinancialLoad` desabilitado na integração normal. Para executá-lo, uso `make benchmark`, que habilita apenas esse cenário e mantém a mesma regra de preparação e encerramento dos containers. A metodologia e os resultados estão em [BENCHMARK.md](BENCHMARK.md).
+`TestOutboxSustainedLoad` executa na integração normal e na CI: 60 requisições a 20/s em cada um dos três perfis, com até trinta segundos para drenar a outbox. Além de saldo, versão e ledger, confere todos os IDs, snapshots e ordem por carteira recebidos no SQS.
+
+`TestFinancialLoad` fica desabilitado na integração normal. `make benchmark` habilita esse cenário com uma rajada de 300 requisições por perfil. `make benchmark-e2e` usa 200 requisições a 20/s. Ambos mantêm a mesma preparação e limpeza e exigem drenagem completa; o relatório separa throughput HTTP, publicação durante a carga e throughput até confirmar todos os eventos. A metodologia, os parâmetros e os resultados estão em [BENCHMARK.md](BENCHMARK.md).
 
 ## Integração contínua
 

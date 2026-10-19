@@ -10,16 +10,18 @@ import (
 )
 
 type Metrics struct {
-	registry                           *prometheus.Registry
-	transactions                       *prometheus.CounterVec
-	duration                           *prometheus.HistogramVec
-	replays, conflicts, reconciliation prometheus.Counter
-	Retries                            *prometheus.CounterVec
-	DLQ                                prometheus.Gauge
-	Pending, Oldest                    prometheus.Gauge
-	Published                          prometheus.Counter
-	LockWait, TransactionStart         prometheus.Histogram
-	Concurrency                        prometheus.Counter
+	registry                               *prometheus.Registry
+	transactions                           *prometheus.CounterVec
+	duration                               *prometheus.HistogramVec
+	replays, conflicts, reconciliation     prometheus.Counter
+	Retries                                *prometheus.CounterVec
+	DLQ                                    prometheus.Gauge
+	Pending, Oldest                        prometheus.Gauge
+	Published                              prometheus.Counter
+	LockWait, TransactionStart             prometheus.Histogram
+	OutboxClaim, OutboxSend, OutboxConfirm prometheus.Histogram
+	PoolAcquired, PoolMax, PoolWait        prometheus.Gauge
+	Concurrency                            prometheus.Counter
 }
 
 func New() *Metrics {
@@ -38,8 +40,14 @@ func New() *Metrics {
 		LockWait:         prometheus.NewHistogram(prometheus.HistogramOpts{Name: "wager_wallet_lock_duration_seconds", Help: "Database round trip including wallet row lock wait.", Buckets: prometheus.DefBuckets}),
 		TransactionStart: prometheus.NewHistogram(prometheus.HistogramOpts{Name: "wager_database_transaction_start_seconds", Help: "Pool acquisition and BEGIN round trip.", Buckets: prometheus.DefBuckets}),
 		Concurrency:      prometheus.NewCounter(prometheus.CounterOpts{Name: "wager_concurrency_conflicts_total", Help: "Database deadlocks, serialization failures and wallet version conflicts."}),
+		OutboxClaim:      prometheus.NewHistogram(prometheus.HistogramOpts{Name: "wager_outbox_claim_duration_seconds", Help: "Pool acquisition and outbox lease claim round trip.", Buckets: prometheus.DefBuckets}),
+		OutboxSend:       prometheus.NewHistogram(prometheus.HistogramOpts{Name: "wager_outbox_send_duration_seconds", Help: "SQS SendMessage duration including SDK retries, for successful and failed sends.", Buckets: prometheus.DefBuckets}),
+		OutboxConfirm:    prometheus.NewHistogram(prometheus.HistogramOpts{Name: "wager_outbox_confirm_duration_seconds", Help: "Pool acquisition and publication confirmation round trip.", Buckets: prometheus.DefBuckets}),
+		PoolAcquired:     prometheus.NewGauge(prometheus.GaugeOpts{Name: "wager_database_pool_acquired_connections", Help: "Connections currently acquired from this process pool."}),
+		PoolMax:          prometheus.NewGauge(prometheus.GaugeOpts{Name: "wager_database_pool_max_connections", Help: "Maximum connections in this process pool."}),
+		PoolWait:         prometheus.NewGauge(prometheus.GaugeOpts{Name: "wager_database_pool_empty_acquire_wait_seconds_total", Help: "Cumulative wait for connections when this process pool was empty."}),
 	}
-	m.registry.MustRegister(m.transactions, m.duration, m.replays, m.conflicts, m.reconciliation, m.Retries, m.DLQ, m.Pending, m.Oldest, m.Published, m.LockWait, m.TransactionStart, m.Concurrency, collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
+	m.registry.MustRegister(m.transactions, m.duration, m.replays, m.conflicts, m.reconciliation, m.Retries, m.DLQ, m.Pending, m.Oldest, m.Published, m.LockWait, m.TransactionStart, m.Concurrency, m.OutboxClaim, m.OutboxSend, m.OutboxConfirm, m.PoolAcquired, m.PoolMax, m.PoolWait, collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	return m
 }
 func (m *Metrics) Processed(kind, status string, duration time.Duration) {

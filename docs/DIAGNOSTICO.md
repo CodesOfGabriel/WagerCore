@@ -44,6 +44,8 @@ Escolhi registrar tipos, códigos e identificadores técnicos em vez de mensagen
 
 `wager_failed` registra a primeira falha permanente auditada, com código SQL e identidade financeira. O HTTP devolve o resultado `FAILED`; um replay usa o mesmo resultado, sem nova tentativa financeira.
 
+`42P01`, `42703` e `42883` indicam schema/deploy incompleto: geram indisponibilidade e rollback, sem consumir a identidade em `FAILED`. Corrija as migrations e repita a mesma chave e payload. No SQS, confira a DLQ se o reparo exceder o número de recebimentos permitido.
+
 As etapas indicam a operação: `open_wallet`, `read_wallet`, `process_wager`, `read_transaction`, `read_ledger` ou `reconcile_wallet`. Falhas técnicas não expõem detalhes na resposta ao cliente.
 
 ## Consumidor SQS
@@ -64,9 +66,13 @@ A ausência de `sqs_completed` após `sqs_processed` exige conferir a confirmaç
 
 `outbox_publish_retry` distingue `decode_event`, `publish` e `confirm_publication`. `outbox_sent` confirma o envio ao broker, mas a confirmação local ainda pode falhar. Nesse caso, a nova tentativa preserva o mesmo `eventId` e snapshot.
 
-`outbox_retry_schedule_failed` e `reference_retry_schedule_failed` indicam falha ao persistir a próxima tentativa; o lease continua sendo o mecanismo de retomada. Uma reserva perdida na outbox é registrada em DEBUG como `outbox_lease_lost`, pois outro worker pode já ter assumido o evento.
+`outbox_retry_schedule_failed` e `reference_retry_schedule_failed` indicam falha ao persistir a próxima tentativa; o lease continua sendo o mecanismo de retomada. Reservas perdidas são registradas em DEBUG como `outbox_lease_lost`, `outbox_retry_lease_lost` ou `reference_retry_lease_lost`. O worker antigo não confirma nem reagenda um lease vencido, liberado ou reassumido.
 
 `reference_retry`, na etapa `resume_reference`, informa falhas técnicas na retomada de uma transação pendente. `reference_failed` indica que uma falha permanente foi auditada e encerrou a referência em `FAILED`. A resolução ou rejeição da referência deve ser conferida na consulta da transação. Falhas nas consultas de métricas geram `outbox_stats_failed` ou `dlq_stats_failed`; o último valor da métrica pode estar desatualizado.
+
+Para backlog, compare `rate(wager_outbox_published_total[1m])` com a taxa de eventos produzidos, quantidade pendente e idade do mais antigo. Use os histogramas `wager_outbox_claim_duration_seconds`, `wager_outbox_send_duration_seconds` e `wager_outbox_confirm_duration_seconds` para separar custo de reserva, envio e confirmação. As amostras incluem tentativas malsucedidas. `wager_database_pool_acquired_connections`, `wager_database_pool_max_connections` e `wager_database_pool_empty_acquire_wait_seconds_total` ajudam a identificar saturação. São amostradas pelo publisher, com pausa de um segundo; avalie cada processo e não some os gauges globais de pendências entre réplicas.
+
+A idade usa `clock_timestamp()` e `occurred_at` do próprio PostgreSQL. Comparar o timestamp persistido com o relógio do processo pode distorcer o atraso quando host e VM estão dessincronizados. Outbox vazia tem idade zero.
 
 ## Consultar os registros da operação
 

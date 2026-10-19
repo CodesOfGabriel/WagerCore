@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,6 +23,77 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.HTTPAddr != ":8080" || cfg.HealthTimeout != 2*time.Second || cfg.DatabaseURL == "" {
 		t.Fatalf("unexpected config: %+v", cfg)
+	}
+}
+
+func productionEnvironment(t *testing.T) {
+	t.Helper()
+	for key, value := range map[string]string{
+		"APP_ENV": "production", "DATABASE_URL": "postgres://db/wagercore", "HTTP_ADDR": ":8080",
+		"OIDC_ISSUER_URL": "https://identity.example.com/realms/wagercore",
+		"OIDC_JWKS_URL":   "https://identity.example.com/realms/wagercore/protocol/openid-connect/certs",
+		"OIDC_AUDIENCE":   "wagercore-api", "SQS_ENDPOINT": "", "AWS_ACCESS_KEY_ID": "", "AWS_SECRET_ACCESS_KEY": "",
+		"FAULT_POINT": "", "FAULT_TRANSACTION": "",
+	} {
+		t.Setenv(key, value)
+	}
+}
+
+func TestProductionRequiresExplicitIdentityAndRejectsLocalSettings(t *testing.T) {
+	for _, tt := range []struct{ key, value string }{
+		{"OIDC_ISSUER_URL", ""}, {"OIDC_JWKS_URL", ""}, {"OIDC_AUDIENCE", "  "},
+		{"OIDC_ISSUER_URL", "http://identity.example.com/realms/wagercore"},
+		{"OIDC_ISSUER_URL", "https://LOCALHOST./realms/wagercore"},
+		{"OIDC_JWKS_URL", "https://keys.localhost/certs"},
+		{"OIDC_JWKS_URL", "https://127.0.0.1/certs"}, {"OIDC_JWKS_URL", "https://[::1]/certs"},
+		{"OIDC_JWKS_URL", "https://0.0.0.0/certs"}, {"OIDC_JWKS_URL", "https://keycloak/certs"},
+		{"SQS_ENDPOINT", "http://localstack:4566"}, {"SQS_ENDPOINT", "https://localhost:4566"},
+		{"SQS_ENDPOINT", "https://localstack:4566"},
+		{"AWS_ACCESS_KEY_ID", "test"}, {"AWS_SECRET_ACCESS_KEY", "test"},
+	} {
+		t.Run(tt.key+"="+tt.value, func(t *testing.T) {
+			productionEnvironment(t)
+			t.Setenv(tt.key, tt.value)
+			if strings.HasPrefix(tt.key, "AWS_") {
+				t.Setenv("AWS_ACCESS_KEY_ID", "real-access-key")
+				t.Setenv("AWS_SECRET_ACCESS_KEY", "real-secret")
+				t.Setenv(tt.key, tt.value)
+			}
+			if _, err := config.Load(); err == nil {
+				t.Fatal("unsafe production configuration accepted")
+			}
+		})
+	}
+	for _, key := range []string{"OIDC_ISSUER_URL", "OIDC_JWKS_URL", "OIDC_AUDIENCE"} {
+		t.Run("missing "+key, func(t *testing.T) {
+			productionEnvironment(t)
+			if err := os.Unsetenv(key); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := config.Load(); err == nil {
+				t.Fatal("local identity default accepted in production")
+			}
+		})
+	}
+}
+
+func TestProductionUsesAWSDefaultsWithoutLocalCredentials(t *testing.T) {
+	productionEnvironment(t)
+	for _, key := range []string{"SQS_ENDPOINT", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"} {
+		if err := os.Unsetenv(key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SQSEndpoint != "" || cfg.AWSAccessKeyID != "" || cfg.AWSSecretAccessKey != "" {
+		t.Fatal("local broker defaults leaked into production")
+	}
+	t.Setenv("SQS_ENDPOINT", "https://sqs.us-east-1.amazonaws.com")
+	if _, err := config.Load(); err != nil {
+		t.Fatalf("explicit HTTPS broker endpoint rejected: %v", err)
 	}
 }
 

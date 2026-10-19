@@ -88,9 +88,17 @@ func backoff(base time.Duration, attempt int) time.Duration {
 }
 
 func (r *Runtime) publisher(ctx context.Context) {
+	statsDone := make(chan struct{})
+	go func() {
+		defer close(statsDone)
+		r.publisherStats(ctx)
+	}()
+	defer func() { <-statsDone }()
 	for ctx.Err() == nil {
 		work, cancel := context.WithTimeout(ctx, 5*time.Second)
+		started := time.Now()
 		items, err := r.queue.ClaimOutbox(work, r.cfg.WorkerConcurrency, r.cfg.LeaseDuration)
+		r.metrics.OutboxClaim.Observe(time.Since(started).Seconds())
 		cancel()
 		if err != nil && ctx.Err() == nil {
 			r.logger.Warn("outbox_claim_failed", append([]any{"stage", "claim_outbox"}, telemetry.ErrorFields(err)...)...)
@@ -102,7 +110,17 @@ func (r *Runtime) publisher(ctx context.Context) {
 			go func(item postgres.OutboxItem) { defer group.Done(); r.publish(ctx, item) }(item)
 		}
 		group.Wait()
-		work, cancel = context.WithTimeout(ctx, 2*time.Second)
+		// Busy publishers immediately claim the next wallet heads. Poll only when idle or failing.
+		if (err != nil || len(items) == 0) && !pause(ctx, r.cfg.WorkerInterval) {
+			return
+		}
+	}
+}
+
+func (r *Runtime) publisherStats(ctx context.Context) {
+	for ctx.Err() == nil {
+		r.queue.ObservePool(r.metrics)
+		work, cancel := context.WithTimeout(ctx, 2*time.Second)
 		pending, age, err := r.queue.OutboxStats(work)
 		if err == nil {
 			r.metrics.Pending.Set(float64(pending))
@@ -117,7 +135,7 @@ func (r *Runtime) publisher(ctx context.Context) {
 			r.logger.Warn("dlq_stats_failed", append([]any{"stage", "read_dlq_stats"}, telemetry.ErrorFields(err)...)...)
 		}
 		cancel()
-		if !pause(ctx, r.cfg.WorkerInterval) {
+		if !pause(ctx, time.Second) {
 			return
 		}
 	}
@@ -140,13 +158,17 @@ func (r *Runtime) publish(root context.Context, item postgres.OutboxItem) {
 	attrs := []any{"eventId", item.ID, "aggregateId", item.AggregateID, "correlationId", envelope.CorrelationID, "messageId", envelope.CausationID, "walletId", envelope.Data.WalletID, "transactionId", envelope.Data.TransactionID, "attempt", item.Attempts}
 	if err == nil {
 		stage = "publish"
+		started := time.Now()
 		err = r.broker.Publish(ctx, item.ID, envelope.Data.WalletID, item.Payload)
+		r.metrics.OutboxSend.Observe(time.Since(started).Seconds())
 	}
 	if err == nil {
 		r.logger.Info("outbox_sent", attrs...)
 		r.faults.Hit("after_event_publish", envelope.Data.ExternalTransactionID)
 		stage = "confirm_publication"
+		started := time.Now()
 		err = r.queue.Published(ctx, item)
+		r.metrics.OutboxConfirm.Observe(time.Since(started).Seconds())
 	}
 	if err == nil {
 		r.metrics.Published.Inc()
@@ -164,7 +186,11 @@ func (r *Runtime) publish(root context.Context, item postgres.OutboxItem) {
 	cleanup, stop := context.WithTimeout(context.Background(), 2*time.Second)
 	defer stop()
 	if err := r.queue.RetryOutbox(cleanup, item, delay); err != nil {
-		r.logger.Warn("outbox_retry_schedule_failed", append(append(attrs, "stage", "schedule_retry"), telemetry.ErrorFields(err)...)...)
+		if errors.Is(err, application.ErrLeaseLost) {
+			r.logger.Debug("outbox_retry_lease_lost", attrs...)
+		} else {
+			r.logger.Warn("outbox_retry_schedule_failed", append(append(attrs, "stage", "schedule_retry"), telemetry.ErrorFields(err)...)...)
+		}
 	}
 }
 
@@ -194,7 +220,11 @@ func (r *Runtime) references(ctx context.Context) {
 					cleanup, stop := context.WithTimeout(context.Background(), 2*time.Second)
 					defer stop()
 					if err := r.queue.RetryReference(cleanup, item, backoff(r.cfg.RetryBase, 1)); err != nil {
-						r.logger.Warn("reference_retry_schedule_failed", append([]any{"transactionId", item.ID, "stage", "schedule_retry"}, telemetry.ErrorFields(err)...)...)
+						if errors.Is(err, application.ErrLeaseLost) {
+							r.logger.Debug("reference_retry_lease_lost", "transactionId", item.ID)
+						} else {
+							r.logger.Warn("reference_retry_schedule_failed", append([]any{"transactionId", item.ID, "stage", "schedule_retry"}, telemetry.ErrorFields(err)...)...)
+						}
 					}
 				}
 			}(item)

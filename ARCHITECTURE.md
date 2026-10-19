@@ -46,7 +46,9 @@ O resultado guarda o saldo observado no processamento. Um replay terminal retorn
 
 Separei indisponibilidade de falha permanente para que um timeout não encerre uma operação que ainda pode ser processada. Perda de conexão, cancelamento, deadlock e falha de serialização continuam recuperáveis: o HTTP retorna `503` quando não há resultado confirmado, e o consumidor mantém a mensagem para reentrega.
 
-Classifiquei como permanentes os erros SQL `23514`, `23503`, `22003`, `22P02`, `42P01`, `42703` e `42883`. Eles indicam restrição violada, valor incompatível ou estrutura de persistência ausente. Esses códigos são retornados pelo servidor e confirmam que a transação não teve sucesso; falhas de rede durante o commit não entram nessa classificação.
+Classifiquei como permanentes os erros SQL `23514`, `23503`, `22003` e `22P02`: restrição de integridade, chave estrangeira, overflow e representação inválida. A entrada já passou pelo domínio; uma violação dessas no adapter indica que a operação não pode ser confirmada conforme o contrato de persistência. A política é conservadora: registra a tentativa para investigação, sem repetir automaticamente uma operação que violou invariantes. Esses códigos são retornados pelo servidor e confirmam que a transação não teve sucesso; falhas de rede durante o commit não entram nessa classificação.
+
+Tabela (`42P01`), coluna (`42703`) ou função (`42883`) ausentes são falhas operacionais de schema/deploy. Elas fazem rollback e retornam indisponibilidade, preservando a identidade para retry depois da correção das migrations. No SQS, a mensagem continua sujeita às cinco tentativas e pode chegar à DLQ antes do reparo; nesse caso, exige reenvio operacional após corrigir o schema. Não há garantia de recuperação automática após esgotar a política do broker.
 
 Quando uma operação externa válida encontra um desses erros, primeiro concluo o rollback. Depois, abro outra transação, bloqueio a carteira e confiro novamente a identidade financeira. Se outra instância já tiver confirmado um resultado, devolvo esse resultado. Caso contrário, registro `FAILED` com `INFRASTRUCTURE_FAILURE`, sem saldo de resultado, movimento, ledger ou evento financeiro. Na entrada SQS, a inbox fica vinculada a essa auditoria no mesmo commit. Se o banco não permitir salvar a auditoria, devolvo indisponibilidade e preservo a possibilidade de nova tentativa.
 
@@ -72,6 +74,10 @@ Adicionei à outbox uma sequência persistida e um índice das pendências por c
 
 O envio ocorre após o commit. Só o proprietário de um lease válido confirma `published_at`. Se o processo cair após enviar, outro publisher reenviará o mesmo snapshot e `eventId`; o protocolo é de entrega ao menos uma vez. Consumidores devem deduplicar por `eventId`, mesmo que FIFO suprima repetições dentro de sua janela de deduplicação.
 
+Reagendar publicação ou referência também exige token e lease ainda válido. Os dois métodos conferem exatamente uma linha atualizada; ausência, conclusão, expiração ou retomada por outro worker retornam `ErrLeaseLost`. O proprietário antigo não pode adiar o trabalho reassumido.
+
+Enquanto encontra trabalho, o publisher reserva o próximo lote imediatamente. `WORKER_INTERVAL` controla a espera quando não há candidatos ou a consulta falha. Estatísticas da outbox, pool e DLQ são coletadas em um ciclo separado, com pausa de um segundo, sem condicionar cada lote a uma consulta ao broker. A concorrência continua limitada a `WORKER_CONCURRENCY`, com um evento por carteira em cada reserva.
+
 ## SQS
 
 | Fila | Uso |
@@ -96,11 +102,19 @@ O padrão do lease e da visibilidade é trinta segundos. O publisher tem prazo d
 
 O encerramento para de aceitar HTTP, aguarda requisições no prazo, cancela polling e jobs e fecha as conexões. Validei essa ordem com SIGTERM durante requisição bloqueada, mensagem em processamento e envio ao broker sem confirmação local. Trabalho interrompido é recuperado por rollback, expiração de lease ou visibilidade. Readiness verifica banco e filas; a inicialização também exige JWKS disponível. A verificação criptográfica usa RS256, emissor, audience, expiração, `nbf`, subject e permissões do cliente.
 
+O readiness conjunto atende ao contrato do desafio: SQS indisponível retira a instância do tráfego, mesmo que uma chamada HTTP direta ainda pudesse confirmar saldo, ledger e outbox no PostgreSQL. A outbox permite acumular eventos duráveis, mas não altera a decisão do balanceador. Separar readiness de API e workers em produção exigiria definir limites de backlog, alertas e capacidade de recuperação; essa separação não está implementada.
+
+`APP_ENV=production` remove os defaults locais de identidade, endpoint e credenciais. Exige issuer e JWKS explícitos por HTTPS, sem hosts de loopback ou aliases dos emuladores, e audience explícita. Recusa credenciais `test`. `SQS_ENDPOINT` vazio usa o endpoint AWS da região; um endpoint explícito precisa passar pelas mesmas verificações de HTTPS e host. O SDK usa sua cadeia padrão de credenciais, incluindo roles e tokens de sessão; não há override estático nessa modalidade. Endereços internos HTTPS de um provedor real continuam permitidos.
+
 ## Observabilidade e reconciliação
 
 Os logs JSON identificam a etapa, a categoria do erro e os identificadores disponíveis. Falhas SQL registram SQLSTATE e constraint; falhas do SDK registram operação, código e identificador da resposta quando disponíveis. Mensagens brutas de exceção, tokens, secrets e payloads financeiros não são registrados. O procedimento de investigação e a interpretação desses campos estão em [DIAGNOSTICO.md](docs/DIAGNOSTICO.md).
 
 `/metrics` exige o serviço interno. Expõe operações por tipo/status, duração, replays, conflitos de idempotência, conflitos SQL, retries, tamanho aproximado da DLQ, pendências e idade da outbox, publicações e divergências de reconciliação. Há histogramas do round trip de aquisição do lock e de aquisição de conexão mais `BEGIN`; eles incluem latência do banco. Métricas de runtime complementam o diagnóstico. Labels não contêm IDs.
+
+Os histogramas `wager_outbox_claim_duration_seconds`, `wager_outbox_send_duration_seconds` e `wager_outbox_confirm_duration_seconds` separam reserva, `SendMessage` (incluindo retries do SDK) e confirmação. A amostragem do publisher também expõe conexões adquiridas, limite do pool e espera acumulada por pool vazio. Os valores de pool são locais ao processo; pendências da outbox são globais ao banco e não devem ser somadas entre réplicas.
+
+Quantidade, timestamp mais antigo e horário atual da outbox são lidos juntos no PostgreSQL. A idade usa o mesmo relógio dos eventos persistidos, evitando valores negativos no benchmark ou atraso artificialmente zerado nas métricas quando o relógio da VM difere do host.
 
 A reconciliação lê saldo, créditos, débitos e contagem em uma única consulta, sob a mesma visão do PostgreSQL. A soma usa `NUMERIC` no banco antes de retornar centavos inteiros. `difference` é saldo armazenado menos saldo reconstruído. O endpoint apenas informa a divergência, gera log e incrementa a métrica; não corrige o histórico.
 

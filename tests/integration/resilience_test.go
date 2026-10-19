@@ -129,6 +129,54 @@ func TestSQSOutageRetainsCommittedEvents(t *testing.T) {
 	}
 }
 
+func TestSchemaFailureCanBeRetriedAfterRepair(t *testing.T) {
+	for _, code := range []string{"42P01", "42703", "42883"} {
+		t.Run(code, func(t *testing.T) {
+			q := queues(t)
+			db := newDatabase(t, true)
+			p := startServer(t, db, "WORKER_ROLES=consumer", "RETRY_BASE=1s")
+			internal, provider := token(t, "internal-service"), token(t, "provider-a")
+			w := openAPIWallet(t, p, internal, "100.00")
+			_, err := db.conn.Exec(db.ctx, `CREATE FUNCTION fail_test_schema() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+ RAISE EXCEPTION 'injected schema failure' USING ERRCODE='`+code+`'; END $$;
+ CREATE TRIGGER fail_test_schema BEFORE INSERT ON wallet_ledger FOR EACH ROW EXECUTE FUNCTION fail_test_schema()`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r, key := request(w, domain.Bet, "25.00"), newID()
+			expect(t, p, "POST", "/wagering/transactions", provider, key, r, 503, nil)
+			message := envelope(r, key)
+			q.send(t, message)
+			eventually(t, 5*time.Second, "schema failure retried by SQS", func() bool {
+				for _, entry := range p.entries() {
+					if entry["msg"] == "sqs_message_retry" && entry["messageId"] == message.MessageID && entry["sqlState"] == code {
+						return true
+					}
+				}
+				return false
+			})
+			db.assertBalance(t, w, 10000, 1)
+			if db.count(t, "SELECT count(*) FROM wager_transactions WHERE external_transaction_id=$1", r.ExternalTransactionID) != 0 || db.count(t, "SELECT count(*) FROM inbox") != 0 || db.count(t, "SELECT count(*) FROM outbox") != 2 {
+				t.Fatal("schema failure consumed identity or committed side effects")
+			}
+			if _, err := db.conn.Exec(db.ctx, "DROP TRIGGER fail_test_schema ON wallet_ledger"); err != nil {
+				t.Fatal(err)
+			}
+			eventually(t, 10*time.Second, "same SQS operation completes after schema repair", func() bool {
+				return db.count(t, "SELECT count(*) FROM inbox WHERE message_id=$1 AND completed_at IS NOT NULL", message.MessageID) == 1
+			})
+			replay := wager(t, p, provider, r, key, 200)
+			if replay.Status != domain.Processed || !replay.IdempotentReplay {
+				t.Fatalf("replay after repair: %+v", replay)
+			}
+			db.assertBalance(t, w, 7500, 2)
+			if db.count(t, "SELECT count(*) FROM wallet_ledger WHERE transaction_id=$1", replay.TransactionID) != 1 {
+				t.Fatal("operation not applied exactly once")
+			}
+		})
+	}
+}
+
 func TestPermanentInfrastructureFailureIsAudited(t *testing.T) {
 	q := queues(t)
 	db := newDatabase(t, true)

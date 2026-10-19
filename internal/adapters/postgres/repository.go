@@ -100,7 +100,7 @@ func databaseError(err error) error {
 	}
 	if errors.As(err, &sqlError) {
 		switch sqlError.Code {
-		case "23514", "23503", "22003", "22P02", "42P01", "42703", "42883":
+		case "23514", "23503", "22003", "22P02":
 			return fmt.Errorf("%w: %w", application.ErrPermanentInfrastructure, err)
 		}
 	}

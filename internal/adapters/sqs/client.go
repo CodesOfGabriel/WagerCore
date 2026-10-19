@@ -26,7 +26,7 @@ func NewBroker(lifecycle fx.Lifecycle, cfg config.Config) (*Broker, error) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	client := &http.Client{Transport: transport, Timeout: 25 * time.Second}
 	options := []func(*awsconfig.LoadOptions) error{awsconfig.WithRegion(cfg.AWSRegion), awsconfig.WithHTTPClient(client), awsconfig.WithRetryMaxAttempts(2)}
-	if cfg.AWSAccessKeyID != "" {
+	if cfg.Environment != "production" && cfg.AWSAccessKeyID != "" {
 		options = append(options, awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(cfg.AWSAccessKeyID, cfg.AWSSecretAccessKey, "")))
 	}
 	awsConfig, err := awsconfig.LoadDefaultConfig(context.Background(), options...)
