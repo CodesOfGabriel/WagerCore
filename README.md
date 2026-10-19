@@ -6,14 +6,23 @@ Implementa `BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK`, abertura interna, referê
 
 - [Contratos da API e exemplos](docs/API.md)
 - [Arquitetura e regras financeiras](ARCHITECTURE.md)
+- [Execução e organização dos testes](docs/TESTES.md)
+- [Diagnóstico de falhas](docs/DIAGNOSTICO.md)
 - [Cenários e evidências de validação](docs/CENARIOS.md)
 
 ## Ambiente local
 
-Requisitos: Docker com Compose v2. Para executar Go fora dos containers, use Go 1.27.2. Os exemplos de token também usam `curl` e Python 3.
+Execute os comandos na raiz do repositório. O ambiente em containers exige Docker com Compose v2 e as portas 8080, 8081, 4566 e 5432 disponíveis. Para executar Go ou os testes no host, use Go 1.27.2. O race detector também exige CGO habilitado e um compilador C. Os exemplos de token usam `curl` e Python 3.
 
 ```sh
 make up
+```
+
+`make up` mantém os logs no terminal. Para executar em segundo plano e aguardar os health checks:
+
+```sh
+docker compose -f docker-compose.local.yml up -d --build --wait
+docker compose -f docker-compose.local.yml ps
 ```
 
 O Compose inicia PostgreSQL, Keycloak e LocalStack, importa o realm, cria três filas e aplica as migrations antes de iniciar a API. As credenciais presentes no repositório são exemplos para esse ambiente local.
@@ -74,8 +83,9 @@ A aposta retorna saldo `75.00`. Repetir o mesmo envio devolve o resultado persis
 ## Executar Go no host
 
 ```sh
+docker compose -f docker-compose.local.yml stop app
 docker compose -f docker-compose.local.yml up -d --wait postgres keycloak localstack
-cp .env.example .env
+test -f .env || cp .env.example .env
 set -a
 . ./.env
 set +a
@@ -83,7 +93,9 @@ make migrate-up
 make run
 ```
 
-A aplicação lê o ambiente do processo. O arquivo `.env` é carregado pelo shell no exemplo acima. A API do Compose deve estar parada para liberar a porta 8080.
+A aplicação lê o ambiente do processo; o shell carrega `.env` no exemplo acima. O primeiro comando encerra a API do Compose e seus workers, liberando a porta 8080 e evitando consumidores concorrentes durante o debug. O arquivo `.env` existente é preservado. Confira seus endereços antes de aplicar migrations.
+
+Para voltar à execução em containers, encerre `make run` com `Ctrl+C` e execute `make up`.
 
 A configuração completa está em [.env.example](.env.example). `DATABASE_MAX_CONNECTIONS` limita o pool de cada processo. `WORKER_ROLES` aceita `all`, `none`, `consumer`, `publisher` ou `references`. `WORKER_CONCURRENCY` limita os lotes e o trabalho simultâneo de cada worker; o consumidor recebe no máximo dez mensagens por lote.
 
@@ -114,24 +126,26 @@ A reversão da versão 4 falha se houver rejeições incompatíveis com a restri
 
 ## Testes
 
+Verificações sem dependências externas:
+
 ```sh
 make check
 make build
+```
+
+`make check` executa testes sem a tag de integração, race detector e `go vet`. `make build` gera `bin/server` e `bin/migrate`. Esses comandos não substituem os testes financeiros com serviços reais.
+
+Integração completa:
+
+```sh
 make test-deps-up
 make test-integration
 make test-deps-down
 ```
 
-`make check` executa testes, race detector e `go vet`. A integração usa PostgreSQL em 55432, Keycloak em 58081 e LocalStack em 54566, separados do ambiente local. Cada teste cria e remove seu schema; os cenários SQS compartilham filas de teste e executam em sequência. Não execute duas suítes de integração ao mesmo tempo no mesmo ambiente.
+A preparação inicia PostgreSQL em 55432, Keycloak em 58081 e LocalStack em 54566. Os testes usam esse ambiente separado e iniciam os próprios processos Go; não precisam da API local em execução. O último comando encerra as dependências e descarta o banco temporário de testes.
 
-```sh
-make test-concurrency
-make test-failover
-```
-
-Esses alvos selecionam cenários da suíte completa. Os testes iniciam três processos Go independentes quando necessário, usam tokens reais e consultam o estado financeiro no PostgreSQL. A falta de `TEST_DATABASE_URL` causa falha explícita ao executar `go test -tags=integration` diretamente; o Makefile fornece os endereços padrão.
-
-A CI executa verificações Go e a mesma suíte com os três serviços. A matriz de cenários e os limites das demonstrações estão em [CENARIOS.md](docs/CENARIOS.md).
+A [documentação dos testes](docs/TESTES.md) detalha os alvos, isolamento, execução de um cenário, falhas esperadas e diagnóstico. A [matriz de cenários](docs/CENARIOS.md) descreve as garantias verificadas. Para investigar falhas durante o uso da aplicação, consulte [DIAGNOSTICO.md](docs/DIAGNOSTICO.md).
 
 ## Estrutura
 
@@ -144,6 +158,6 @@ internal/adapters/           HTTP, PostgreSQL, OIDC e SQS
 internal/platform/           Configuração, workers, métricas e falhas de teste
 internal/bootstrap/          Composição e ciclo de vida com Fx
 migrations/                  Schema e restrições
-tests/integration/          Processos, serviços reais e recuperação
-deployments/                Realm e filas locais
+tests/integration/           Processos, serviços reais e recuperação
+deployments/                 Realm e filas locais
 ```

@@ -92,7 +92,7 @@ func (r *Runtime) publisher(ctx context.Context) {
 		items, err := r.queue.ClaimOutbox(work, r.cfg.WorkerConcurrency, r.cfg.LeaseDuration)
 		cancel()
 		if err != nil && ctx.Err() == nil {
-			r.logger.Warn("outbox_claim_failed")
+			r.logger.Warn("outbox_claim_failed", append([]any{"stage", "claim_outbox"}, telemetry.ErrorFields(err)...)...)
 			r.metrics.Retry("outbox")
 		}
 		var group sync.WaitGroup
@@ -106,10 +106,14 @@ func (r *Runtime) publisher(ctx context.Context) {
 		if err == nil {
 			r.metrics.Pending.Set(float64(pending))
 			r.metrics.Oldest.Set(age.Seconds())
+		} else if ctx.Err() == nil {
+			r.logger.Warn("outbox_stats_failed", append([]any{"stage", "read_outbox_stats"}, telemetry.ErrorFields(err)...)...)
 		}
 		size, err := r.broker.DLQSize(work)
 		if err == nil {
 			r.metrics.DLQ.Set(float64(size))
+		} else if ctx.Err() == nil {
+			r.logger.Warn("dlq_stats_failed", append([]any{"stage", "read_dlq_stats"}, telemetry.ErrorFields(err)...)...)
 		}
 		cancel()
 		if !pause(ctx, r.cfg.WorkerInterval) {
@@ -123,31 +127,44 @@ func (r *Runtime) publish(root context.Context, item postgres.OutboxItem) {
 	defer cancel()
 	var envelope struct {
 		CorrelationID string `json:"correlationId"`
+		CausationID   string `json:"causationId"`
 		Data          struct {
 			WalletID              string `json:"walletId"`
+			TransactionID         string `json:"transactionId"`
 			ExternalTransactionID string `json:"externalTransactionId"`
 		} `json:"data"`
 	}
+	stage := "decode_event"
 	err := json.Unmarshal(item.Payload, &envelope)
+	attrs := []any{"eventId", item.ID, "aggregateId", item.AggregateID, "correlationId", envelope.CorrelationID, "messageId", envelope.CausationID, "walletId", envelope.Data.WalletID, "transactionId", envelope.Data.TransactionID, "attempt", item.Attempts}
 	if err == nil {
+		stage = "publish"
 		err = r.broker.Publish(ctx, item.ID, envelope.Data.WalletID, item.Payload)
 	}
 	if err == nil {
-		r.logger.Info("outbox_sent", "eventId", item.ID, "correlationId", envelope.CorrelationID)
+		r.logger.Info("outbox_sent", attrs...)
 		r.faults.Hit("after_event_publish", envelope.Data.ExternalTransactionID)
+		stage = "confirm_publication"
 		err = r.queue.Published(ctx, item)
 	}
 	if err == nil {
 		r.metrics.Published.Inc()
 		return
 	}
-	if !errors.Is(err, application.ErrLeaseLost) {
-		r.logger.Warn("outbox_publish_retry", "eventId", item.ID, "attempt", item.Attempts)
+	delay := backoff(r.cfg.RetryBase, item.Attempts)
+	failure := append(append([]any{}, attrs...), "stage", stage, "retryDelayMs", delay.Milliseconds())
+	failure = append(failure, telemetry.ErrorFields(err)...)
+	if errors.Is(err, application.ErrLeaseLost) {
+		r.logger.Debug("outbox_lease_lost", failure...)
+	} else {
+		r.logger.Warn("outbox_publish_retry", failure...)
 	}
 	r.metrics.Retry("outbox")
 	cleanup, stop := context.WithTimeout(context.Background(), 2*time.Second)
 	defer stop()
-	_ = r.queue.RetryOutbox(cleanup, item, backoff(r.cfg.RetryBase, item.Attempts))
+	if err := r.queue.RetryOutbox(cleanup, item, delay); err != nil {
+		r.logger.Warn("outbox_retry_schedule_failed", append(append(attrs, "stage", "schedule_retry"), telemetry.ErrorFields(err)...)...)
+	}
 }
 
 func (r *Runtime) references(ctx context.Context) {
@@ -156,7 +173,7 @@ func (r *Runtime) references(ctx context.Context) {
 		items, err := r.queue.ClaimReferences(work, r.cfg.WorkerConcurrency, r.cfg.LeaseDuration)
 		cancel()
 		if err != nil && ctx.Err() == nil {
-			r.logger.Warn("reference_claim_failed")
+			r.logger.Warn("reference_claim_failed", append([]any{"stage", "claim_references"}, telemetry.ErrorFields(err)...)...)
 			r.metrics.Retry("references")
 		}
 		var group sync.WaitGroup
@@ -168,10 +185,12 @@ func (r *Runtime) references(ctx context.Context) {
 				defer cancel()
 				if err := r.service.Resume(work, item.ID, item.LeaseID); err != nil && !errors.Is(err, application.ErrLeaseLost) {
 					r.metrics.Retry("references")
-					r.logger.Warn("reference_retry", "transactionId", item.ID)
+					r.logger.Warn("reference_retry", append([]any{"transactionId", item.ID, "stage", "resume_reference"}, telemetry.ErrorFields(err)...)...)
 					cleanup, stop := context.WithTimeout(context.Background(), 2*time.Second)
 					defer stop()
-					_ = r.queue.RetryReference(cleanup, item, backoff(r.cfg.RetryBase, 1))
+					if err := r.queue.RetryReference(cleanup, item, backoff(r.cfg.RetryBase, 1)); err != nil {
+						r.logger.Warn("reference_retry_schedule_failed", append([]any{"transactionId", item.ID, "stage", "schedule_retry"}, telemetry.ErrorFields(err)...)...)
+					}
 				}
 			}(item)
 		}
@@ -190,7 +209,7 @@ func (r *Runtime) consumer(ctx context.Context) {
 				return
 			}
 			r.metrics.Retry("sqs")
-			r.logger.Warn("sqs_receive_failed")
+			r.logger.Warn("sqs_receive_failed", append([]any{"stage", "receive"}, telemetry.ErrorFields(err)...)...)
 			if !pause(ctx, backoff(r.cfg.RetryBase, 1)) {
 				return
 			}
@@ -209,30 +228,45 @@ func (r *Runtime) consume(root context.Context, message types.Message) {
 	ctx, cancel := context.WithTimeout(root, 10*time.Second)
 	defer cancel()
 	count, _ := strconv.Atoi(message.Attributes["ApproximateReceiveCount"])
-	request, hash, err := sqsbroker.Decode(aws.ToString(message.Body))
+	stage := "create_correlation"
+	correlation, err := identifier.New()
+	var request sqsbroker.Requested
+	var result application.WagerResult
+	attrs := []any{"sqsMessageId", aws.ToString(message.MessageId), "receiveCount", count, "correlationId", correlation}
 	if err == nil {
-		var correlation string
-		correlation, err = identifier.New()
+		stage = "decode"
+		var hash []byte
+		request, hash, err = sqsbroker.Decode(aws.ToString(message.Body))
 		if err == nil {
-			r.logger.Info("sqs_received", "messageId", request.MessageID, "receiveCount", count, "correlationId", correlation)
-			_, err = r.service.Process(ctx, request.Data.WagerRequest, request.Data.IdempotencyKey, application.Trace{CorrelationID: correlation, CausationID: request.MessageID}, &application.IncomingMessage{Consumer: "wager-transactions", ID: request.MessageID, Hash: hash})
+			attrs = append(attrs, "messageId", request.MessageID, "walletId", request.Data.WalletID, "providerId", request.Data.ProviderID, "externalTransactionId", request.Data.ExternalTransactionID)
+			r.logger.Info("sqs_received", attrs...)
+			stage = "process"
+			result, err = r.service.Process(ctx, request.Data.WagerRequest, request.Data.IdempotencyKey, application.Trace{CorrelationID: correlation, CausationID: request.MessageID}, &application.IncomingMessage{Consumer: "wager-transactions", ID: request.MessageID, Hash: hash})
+			if err == nil {
+				attrs = append(attrs, "transactionId", result.TransactionID, "status", result.Status, "idempotentReplay", result.IdempotentReplay)
+				r.logger.Info("sqs_processed", attrs...)
+			}
 		}
 	}
 	if err == nil {
 		r.faults.Hit("after_sqs_commit", request.Data.ExternalTransactionID)
+		stage = "acknowledge"
 		err = r.broker.Delete(ctx, message.ReceiptHandle)
 	}
 	if err == nil {
-		r.logger.Info("sqs_completed", "messageId", request.MessageID, "receiveCount", count)
+		r.logger.Info("sqs_completed", attrs...)
 		return
 	}
 	r.metrics.Retry("sqs")
-	r.logger.Warn("sqs_message_retry", "messageId", request.MessageID, "receiveCount", count)
-	cleanup, stop := context.WithTimeout(context.Background(), 2*time.Second)
-	defer stop()
 	delay := int32((backoff(r.cfg.RetryBase, count) + time.Second - 1) / time.Second)
 	if root.Err() != nil {
 		delay = 0
 	}
-	_ = r.broker.Visibility(cleanup, message.ReceiptHandle, delay)
+	failure := append(append([]any{}, attrs...), "stage", stage, "retryDelaySeconds", delay)
+	r.logger.Warn("sqs_message_retry", append(failure, telemetry.ErrorFields(err)...)...)
+	cleanup, stop := context.WithTimeout(context.Background(), 2*time.Second)
+	defer stop()
+	if err := r.broker.Visibility(cleanup, message.ReceiptHandle, delay); err != nil {
+		r.logger.Warn("sqs_visibility_failed", append(append(attrs, "stage", "change_visibility"), telemetry.ErrorFields(err)...)...)
+	}
 }

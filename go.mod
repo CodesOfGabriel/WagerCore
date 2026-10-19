@@ -7,6 +7,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.29.7
 	github.com/aws/aws-sdk-go-v2/credentials v1.17.60
 	github.com/aws/aws-sdk-go-v2/service/sqs v1.38.0
+	github.com/aws/smithy-go v1.22.2
 	github.com/coreos/go-oidc/v3 v3.14.1
 	github.com/go-jose/go-jose/v4 v4.0.5
 	github.com/jackc/pgx/v5 v5.7.6
@@ -24,7 +25,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sso v1.24.16 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.28.15 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.33.15 // indirect
-	github.com/aws/smithy-go v1.22.2 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect

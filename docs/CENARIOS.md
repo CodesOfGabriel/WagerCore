@@ -1,6 +1,6 @@
 # Cenários de validação
 
-A suíte usa PostgreSQL, Keycloak e LocalStack reais. Os processos Go compartilham banco e filas, com portas HTTP próprias. Os comandos de preparação estão no README; este documento relaciona cada cenário à garantia que ele verifica.
+A suíte usa PostgreSQL, Keycloak e LocalStack reais. Os processos Go compartilham banco e filas, com portas HTTP próprias. Os comandos e o isolamento estão em [TESTES.md](TESTES.md); este documento relaciona cada cenário à garantia que ele verifica.
 
 Na execução local de 19/10/2026, `make check build`, `make test-integration` e `make test-failover` passaram. O Docker local iniciou saudável com schema na versão 4. Uma demonstração com abertura, BET e WIN por HTTP, nova BET por SQS e replays terminou com saldo `80.00`, quatro lançamentos reconciliados, inbox concluída e nenhuma pendência de publicação.
 
@@ -14,6 +14,7 @@ Na execução local de 19/10/2026, `make check build`, `make test-integration` e
 | `TestAtomicRollbackWhenOutboxFails` | Uma falha SQL na outbox reverte abertura ou aposta por inteiro |
 | `TestThreeProcessesConcurrentBets` | Três processos, 50 envios da mesma BET, duas apostas concorrentes de 80 sobre 100 e replay após reinício |
 | `TestSQSInboxAndCrossChannelIdempotency` | Disputa HTTP/SQS, mensagens repetidas, inbox, conflito de hash e OPENING inválida na DLQ |
+| `TestSQSLogsAcknowledgementFailureAfterCommit` | Falha de DeleteMessage identificada após o commit, com request ID, transação e replay na reentrega |
 | `TestReferenceWorkerResumesAfterRestart` | Referência recebida depois, continuação persistente e rejeição por prazo/tentativas |
 
 Os testes consultam saldo, versão, transações, ledger, inbox e outbox conforme o cenário. No caso de 50 envios iguais, exigem uma operação aplicada e 49 replays. No caso de duas apostas de 80, exigem uma processada, uma rejeitada e saldo 20. Uma carteira bloqueada por outra conexão não impede o avanço de outra carteira.

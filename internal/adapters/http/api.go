@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/jackc/pgx/v5/pgconn"
 	"io"
 	"log/slog"
 	"net/http"
@@ -136,7 +135,7 @@ func (a *API) openWallet(w http.ResponseWriter, r *http.Request) {
 	}
 	wallet, err := a.service.OpenWallet(r.Context(), request.PlayerID, request.InitialBalance, trace(r))
 	if err != nil {
-		a.failure(w, r, err)
+		a.failure(w, r, err, "open_wallet")
 		return
 	}
 	a.logger.Info("wallet_opened", "walletId", wallet.Snapshot().ID, "correlationId", trace(r).CorrelationID)
@@ -149,7 +148,7 @@ func (a *API) wallet(w http.ResponseWriter, r *http.Request) {
 	}
 	wallet, err := a.service.Reader.Wallet(r.Context(), r.PathValue("walletId"))
 	if err != nil {
-		a.failure(w, r, err)
+		a.failure(w, r, err, "read_wallet")
 		return
 	}
 	writeJSON(w, 200, walletBody(wallet))
@@ -171,7 +170,7 @@ func (a *API) process(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := a.service.Process(r.Context(), request, keys[0], trace(r), nil)
 	if err != nil {
-		a.failure(w, r, err)
+		a.failure(w, r, err, "process_wager", "walletId", request.WalletID, "externalTransactionId", request.ExternalTransactionID)
 		return
 	}
 	a.logger.Info("wager_processed", "transactionId", result.TransactionID, "walletId", request.WalletID, "providerId", request.ProviderID, "correlationId", trace(r).CorrelationID, "status", result.Status, "idempotentReplay", result.IdempotentReplay)
@@ -202,7 +201,7 @@ func (a *API) externalTransaction(w http.ResponseWriter, r *http.Request) {
 }
 func (a *API) respondTransaction(w http.ResponseWriter, r *http.Request, transaction *domain.WagerTransaction, err error) {
 	if err != nil {
-		a.failure(w, r, err)
+		a.failure(w, r, err, "read_transaction")
 		return
 	}
 	s := transaction.Snapshot()
@@ -236,7 +235,7 @@ func (a *API) ledger(w http.ResponseWriter, r *http.Request) {
 	}
 	page, err := a.service.Reader.Ledger(r.Context(), r.PathValue("walletId"), r.URL.Query().Get("cursor"), limit)
 	if err != nil {
-		a.failure(w, r, err)
+		a.failure(w, r, err, "read_ledger")
 		return
 	}
 	type entry struct {
@@ -266,7 +265,7 @@ func (a *API) reconcile(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := a.service.Reader.Reconcile(r.Context(), r.PathValue("walletId"))
 	if err != nil {
-		a.failure(w, r, err)
+		a.failure(w, r, err, "reconcile_wallet")
 		return
 	}
 	a.metrics.Reconciled(result.Consistent)
@@ -276,25 +275,29 @@ func (a *API) reconcile(w http.ResponseWriter, r *http.Request) {
 func badRequest(w http.ResponseWriter, err error) {
 	writeJSON(w, 400, map[string]string{"code": "INVALID_REQUEST", "message": err.Error()})
 }
-func (a *API) failure(w http.ResponseWriter, r *http.Request, err error) {
+func (a *API) failure(w http.ResponseWriter, r *http.Request, err error, stage string, fields ...any) {
+	attrs := []any{"correlationId", trace(r).CorrelationID, "stage", stage, "method", r.Method, "route", r.Pattern, "providerId", principal(r).ProviderID}
+	for _, name := range []string{"walletId", "transactionId", "externalTransactionId"} {
+		if value := r.PathValue(name); value != "" {
+			attrs = append(attrs, name, value)
+		}
+	}
+	attrs = append(attrs, fields...)
+	attrs = append(attrs, telemetry.ErrorFields(err)...)
 	switch {
 	case errors.Is(err, application.ErrNotFound):
 		writeJSON(w, 404, map[string]string{"code": "NOT_FOUND"})
 	case errors.Is(err, application.ErrConflict):
+		a.logger.Warn("request_conflict", attrs...)
 		writeJSON(w, 409, map[string]string{"code": "CONFLICT"})
 	case errors.Is(err, application.ErrUnavailable), errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
 		w.Header().Set("Retry-After", "1")
-		var pgError *pgconn.PgError
-		code, constraint := "", ""
-		if errors.As(err, &pgError) {
-			code, constraint = pgError.Code, pgError.ConstraintName
-		}
-		a.logger.Warn("request_unavailable", "correlationId", trace(r).CorrelationID, "sqlState", code, "constraint", constraint)
+		a.logger.Warn("request_unavailable", attrs...)
 		writeJSON(w, 503, map[string]string{"code": "TEMPORARILY_UNAVAILABLE"})
 	case errors.Is(err, application.ErrInvalidCursor), errors.Is(err, application.ErrWalletMismatch), errors.Is(err, domain.ErrInvalidID), errors.Is(err, domain.ErrInvalidAmount), errors.Is(err, domain.ErrInvalidCurrency), errors.Is(err, domain.ErrInvalidTransaction), errors.Is(err, domain.ErrInvalidReference):
 		badRequest(w, err)
 	default:
-		a.logger.Error("request_failed", "correlationId", trace(r).CorrelationID)
+		a.logger.Error("request_failed", attrs...)
 		writeJSON(w, 500, map[string]string{"code": "INTERNAL_ERROR"})
 	}
 }

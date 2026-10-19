@@ -204,6 +204,16 @@ func TestAtomicRollbackWhenOutboxFails(t *testing.T) {
 	if db.count(t, "SELECT count(*) FROM wallets") != 1 || db.count(t, "SELECT count(*) FROM wager_transactions") != 1 || db.count(t, "SELECT count(*) FROM outbox") != 2 {
 		t.Fatal("outbox failure left partial financial state")
 	}
+	found := false
+	for _, entry := range p.entries() {
+		if entry["msg"] == "request_unavailable" && entry["stage"] == "process_wager" && entry["errorCategory"] == "database" && entry["sqlState"] == "P0001" && entry["walletId"] == w.id {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("database failure lacks stage, wallet and SQLSTATE in logs")
+	}
+
 }
 
 func TestThreeProcessesConcurrentBets(t *testing.T) {

@@ -6,6 +6,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -145,6 +151,17 @@ func TestSQSInboxAndCrossChannelIdempotency(t *testing.T) {
 		return dlq[m.MessageID] && dlq[opening.MessageID]
 	})
 	db.assertBalance(t, w, 9000, 2)
+	conflictLogged := false
+	for _, server := range servers {
+		for _, entry := range server.entries() {
+			if entry["msg"] == "sqs_message_retry" && entry["messageId"] == m.MessageID && entry["stage"] == "process" && entry["errorCategory"] == "conflict" && entry["correlationId"] != "" {
+				conflictLogged = true
+			}
+		}
+	}
+	if !conflictLogged {
+		t.Fatal("inbox conflict lacks stage and correlation in logs")
+	}
 	if db.count(t, "SELECT count(*) FROM inbox") != 2 {
 		t.Fatal("invalid messages left committed inbox rows")
 	}
@@ -296,4 +313,63 @@ func TestCrashAfterEventPublicationUsesStableSnapshot(t *testing.T) {
 		t.Fatalf("FIFO deduplication for retried event: %v", delivered)
 	}
 	db.assertBalance(t, w, 6500, 3)
+}
+
+func TestSQSLogsAcknowledgementFailureAfterCommit(t *testing.T) {
+	q := queues(t)
+	db := newDatabase(t, true)
+	api := startServer(t, db)
+	internal := token(t, "internal-service")
+	w := openAPIWallet(t, api, internal, "100.00")
+	target, err := url.Parse(brokerEndpoint())
+	if err != nil {
+		t.Fatal(err)
+	}
+	forward := httputil.NewSingleHostReverseProxy(target)
+	var failAck atomic.Bool
+	failAck.Store(true)
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.Header.Get("X-Amz-Target"), ".DeleteMessage") && failAck.Load() {
+			w.Header().Set("Content-Type", "application/x-amz-json-1.0")
+			w.Header().Set("X-Amzn-Requestid", "ack-failure-1")
+			w.WriteHeader(403)
+			_, _ = w.Write([]byte(`{"__type":"AccessDenied","message":"injected private-broker-detail"}`))
+			return
+		}
+		forward.ServeHTTP(w, r)
+	}))
+	defer proxy.Close()
+	consumer := startServer(t, db, "WORKER_ROLES=consumer", "SQS_ENDPOINT="+proxy.URL)
+	defer consumer.stop(t)
+	m := envelope(request(w, domain.Bet, "25.00"), newID())
+	q.send(t, m)
+	eventually(t, 10*time.Second, "acknowledgement failure diagnosed", func() bool {
+		for _, entry := range consumer.entries() {
+			if entry["msg"] == "sqs_message_retry" && entry["messageId"] == m.MessageID && entry["stage"] == "acknowledge" {
+				if entry["errorCategory"] != "broker" || entry["sdkOperation"] != "DeleteMessage" || entry["requestId"] != "ack-failure-1" || entry["transactionId"] == "" || entry["correlationId"] == "" {
+					t.Fatalf("incomplete acknowledgement diagnostic: %v", entry)
+				}
+				encoded, _ := json.Marshal(entry)
+				if strings.Contains(string(encoded), "private-broker-detail") {
+					t.Fatal("broker message leaked")
+				}
+				return true
+			}
+		}
+		return false
+	})
+	db.assertBalance(t, w, 7500, 2)
+	if db.count(t, "SELECT count(*) FROM inbox WHERE completed_at IS NOT NULL") != 1 {
+		t.Fatal("acknowledgement failed before inbox commit")
+	}
+	failAck.Store(false)
+	eventually(t, 10*time.Second, "redelivery confirmed as replay", func() bool {
+		for _, entry := range consumer.entries() {
+			if entry["msg"] == "sqs_completed" && entry["messageId"] == m.MessageID && entry["idempotentReplay"] == true {
+				return true
+			}
+		}
+		return false
+	})
+	db.assertBalance(t, w, 7500, 2)
 }

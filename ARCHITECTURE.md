@@ -86,7 +86,7 @@ O encerramento para de aceitar HTTP, aguarda requisições no prazo, cancela pol
 
 ## Observabilidade e reconciliação
 
-Os logs JSON guardam correlação e identificadores disponíveis. Não incluem tokens, secrets ou payloads financeiros. Falhas SQL registram código e constraint sem detalhes dos valores.
+Os logs JSON identificam a etapa, a categoria do erro e os identificadores disponíveis. Falhas SQL registram SQLSTATE e constraint; falhas do SDK registram operação, código e identificador da resposta quando disponíveis. Mensagens brutas de exceção, tokens, secrets e payloads financeiros não são registrados. O procedimento de investigação e a interpretação desses campos estão em [DIAGNOSTICO.md](docs/DIAGNOSTICO.md).
 
 `/metrics` exige o serviço interno. Expõe operações por tipo/status, duração, replays, conflitos de idempotência, conflitos SQL, retries, tamanho aproximado da DLQ, pendências e idade da outbox, publicações e divergências de reconciliação. Há histogramas do round trip de aquisição do lock e de aquisição de conexão mais `BEGIN`; eles incluem latência do banco. Métricas de runtime complementam o diagnóstico. Labels não contêm IDs.
 
