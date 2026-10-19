@@ -97,6 +97,67 @@ func TestProductionUsesAWSDefaultsWithoutLocalCredentials(t *testing.T) {
 	}
 }
 
+func TestProductionWorkerTimeoutWindows(t *testing.T) {
+	for _, tt := range []struct {
+		name, roles, lease, visibility string
+		valid                          bool
+	}{
+		{"defaults", "all", "30s", "30", true},
+		{"expired during publish", "publisher", "1ms", "30", false},
+		{"lease at attempt boundary", "publisher", "12s", "30", false},
+		{"reference lease at attempt boundary", "references", "12s", "30", false},
+		{"lease above attempt boundary", "all", "12001ms", "30", true},
+		{"visibility shorter than processing", "consumer", "30s", "1", false},
+		{"visibility at cleanup boundary", "all", "30s", "12", false},
+		{"visibility above cleanup boundary", "consumer", "30s", "13", true},
+		{"publisher does not consume", "publisher", "30s", "1", true},
+		{"consumer does not claim leases", "consumer", "1ms", "30", true},
+		{"API without workers", "none", "1ms", "1", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			productionEnvironment(t)
+			t.Setenv("WORKER_ROLES", tt.roles)
+			t.Setenv("LEASE_DURATION", tt.lease)
+			t.Setenv("SQS_VISIBILITY_TIMEOUT", tt.visibility)
+			_, err := config.Load()
+			if (err == nil) != tt.valid {
+				t.Fatalf("valid=%t error=%v", tt.valid, err)
+			}
+		})
+	}
+	for _, environment := range []string{"local", "test"} {
+		t.Run(environment+" permits short recovery windows", func(t *testing.T) {
+			productionEnvironment(t)
+			t.Setenv("APP_ENV", environment)
+			t.Setenv("LEASE_DURATION", "1ms")
+			t.Setenv("SQS_VISIBILITY_TIMEOUT", "1")
+			if _, err := config.Load(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestDLQPollingConfiguration(t *testing.T) {
+	for _, value := range []string{"", "0s", "999ms", "2h", "invalid"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("DATABASE_URL", "postgres://localhost/test")
+			t.Setenv("DLQ_POLL_INTERVAL", value)
+			if _, err := config.Load(); err == nil {
+				t.Fatal("invalid polling interval accepted")
+			}
+		})
+	}
+	t.Setenv("DATABASE_URL", "postgres://localhost/test")
+	t.Setenv("DLQ_POLL_INTERVAL", "1m")
+	if cfg, err := config.Load(); err != nil || cfg.DLQPollInterval != time.Minute {
+		t.Fatalf("interval override: config=%v error=%v", cfg.DLQPollInterval, err)
+	}
+	if config.Defaults().DLQPollInterval != 30*time.Second {
+		t.Fatal("unexpected default DLQ polling interval")
+	}
+}
+
 func TestLoadEnvironment(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://localhost/test")
 	t.Setenv("HTTP_ADDR", "127.0.0.1:9090")

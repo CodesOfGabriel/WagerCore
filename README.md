@@ -1,16 +1,13 @@
 # WagerCore
 
-Construí o WagerCore em Go para processar operações financeiras de jogos por HTTP e SQS FIFO. Carteira, transação, ledger e eventos são confirmados em uma transação PostgreSQL. A deduplicação permanece válida entre processos e após reinícios.
+O WagerCore processa operações financeiras de jogos em Go, por HTTP e SQS FIFO. Carteira, transação, ledger e eventos são confirmados em uma transação PostgreSQL. A deduplicação permanece válida entre processos e após reinícios.
 
 Implementa `BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK`, abertura interna, referências pendentes, inbox, outbox e reconciliação. A API usa tokens do Keycloak e separa o serviço interno dos provedores.
 
 - [Contratos da API e exemplos](docs/API.md)
 - [Arquitetura e regras financeiras](ARCHITECTURE.md)
 - [Execução e organização dos testes](docs/TESTES.md)
-- [Diagnóstico de falhas](docs/DIAGNOSTICO.md)
-- [Cenários e evidências de validação](docs/CENARIOS.md)
 - [Teste de carga e resultados](docs/BENCHMARK.md)
-- [Verificação dos pontos da auditoria](docs/AUDITORIA.md)
 
 ## Ambiente local
 
@@ -27,7 +24,7 @@ docker compose -f docker-compose.local.yml up -d --build --wait
 docker compose -f docker-compose.local.yml ps
 ```
 
-Criei `docker-compose.local.yml` para iniciar PostgreSQL, Keycloak e LocalStack, importar o realm, criar as três filas e aplicar as migrations antes da API. Mantive volumes no PostgreSQL e no Keycloak para preservar o ambiente de desenvolvimento entre execuções. As credenciais presentes no repositório são exemplos para esse ambiente local.
+`docker-compose.local.yml` inicia PostgreSQL, Keycloak e LocalStack, importa o realm, cria as três filas e aplica as migrations antes da API. Volumes preservam PostgreSQL e Keycloak entre execuções. As credenciais versionadas são exemplos locais.
 
 | Serviço | Endereço |
 | --- | --- |
@@ -103,11 +100,13 @@ A configuração completa está em [.env.example](.env.example). `DATABASE_MAX_C
 
 `REFERENCE_TTL`, `REFERENCE_MAX_ATTEMPTS` e `RETRY_BASE` controlam referências ausentes. `LEASE_DURATION` controla reservas de publicação e retomada; `SQS_VISIBILITY_TIMEOUT` controla a reentrega do broker. Os padrões dão margem aos prazos de operação, de cinco segundos nos publishers e dez no consumidor.
 
+Em produção, os workers ativos exigem janelas maiores que a tentativa completa: lease acima de 12s para publisher/referências (5s de reserva + 5s de processamento + 2s de limpeza) e visibilidade acima de 12s para o consumidor (10s + 2s). O padrão continua em 30s. `local` e `test` permitem os intervalos curtos usados nos cenários de recuperação.
+
 `OIDC_ISSUER_URL` precisa corresponder ao emissor do token. `OIDC_JWKS_URL` pode usar o endereço interno do Keycloak; isso permite validar no container tokens obtidos pelo host. Para usar AWS, deixe `SQS_ENDPOINT`, `AWS_ACCESS_KEY_ID` e `AWS_SECRET_ACCESS_KEY` vazios e forneça credenciais pela cadeia padrão do SDK, com acesso às filas indicadas na arquitetura.
 
 Com `APP_ENV=production`, os defaults locais de OIDC, SQS e credenciais são removidos. Configure explicitamente `OIDC_ISSUER_URL`, `OIDC_JWKS_URL` e `OIDC_AUDIENCE`; os dois URLs exigem HTTPS e não aceitam loopback nem aliases locais dos emuladores. Deixe `SQS_ENDPOINT` ausente ou vazio para usar o endpoint AWS da região; um endpoint explícito também exige HTTPS e host não local. Credenciais `test` são recusadas. O SDK usa a cadeia padrão da AWS, preservando `AWS_SESSION_TOKEN` e credenciais de roles. Mudar apenas `APP_ENV` no `.env.example` faz a inicialização falhar.
 
-No publisher, `WORKER_INTERVAL` é a pausa dos ciclos sem trabalho ou com falha na reserva. Lotes disponíveis são publicados em sequência, mantendo o limite de concorrência e a ordem por carteira. Consultas de métricas têm um ciclo próprio.
+No publisher, `WORKER_INTERVAL` é a pausa dos ciclos sem trabalho ou com falha na reserva. Lotes disponíveis são publicados em sequência, mantendo o limite de concorrência e a ordem por carteira. Outbox e pool são amostrados com pausa de 1s; a DLQ tem ciclo independente, controlado por `DLQ_POLL_INTERVAL` (padrão 30s, faixa de 1s a 1h).
 
 `SIGINT` e `SIGTERM` encerram o HTTP, cancelam os workers e fecham as conexões. Configuração inválida ou dependências indisponíveis impedem a inicialização.
 
@@ -147,13 +146,15 @@ Integração completa:
 make test-integration
 ```
 
-Criei `scripts/test-integration.sh` para preparar PostgreSQL em 55432, Keycloak em 58081 e LocalStack em 54566 e executar os testes. Removo os containers automaticamente somente quando os testes passam. Em caso de falha ou interrupção, exibo os logs e mantenho os containers para investigação. Depois de investigar, executo `make test-deps-down`.
+`scripts/test-integration.sh` prepara PostgreSQL em 55432, Keycloak em 58081 e LocalStack em 54566 e executa os testes. O script remove os containers após sucesso e os preserva, com logs, em caso de falha ou interrupção. Depois da investigação, `make test-deps-down` encerra o ambiente.
 
-Usei esse mesmo script nos alvos `make test-concurrency` e `make test-failover`. Os testes iniciam os próprios processos Go e não dependem da API local. O ambiente de desenvolvimento permanece separado.
+`make test-concurrency` e `make test-failover` usam o mesmo script. Os testes iniciam processos Go próprios e usam serviços separados do ambiente de desenvolvimento.
 
 `make test-failover` seleciona interrupções, indisponibilidade das dependências, perda de lease, falhas de schema/permanentes e shutdown em andamento. A integração completa também executa uma carga sustentada curta, com drenagem da outbox e conferência dos snapshots no SQS. `make benchmark` compara carga entre uma e três instâncias e grava `.local/benchmark.json`; `make benchmark-e2e` distribui 200 requisições a 20/s e grava `.local/benchmark-e2e.json`. Ambos exigem publicação integral dentro do prazo, além de integridade financeira.
 
-A [documentação dos testes](docs/TESTES.md) detalha os alvos, isolamento, execução de um cenário, falhas esperadas e diagnóstico. A [matriz de cenários](docs/CENARIOS.md) descreve as garantias verificadas. Para investigar falhas durante o uso da aplicação, consulte [DIAGNOSTICO.md](docs/DIAGNOSTICO.md).
+A [documentação dos testes](docs/TESTES.md) detalha os alvos, isolamento, execução de um cenário e diagnóstico.
+
+Material adicional: [cenários de validação](docs/CENARIOS.md), [diagnóstico operacional](docs/DIAGNOSTICO.md) e [registro das auditorias](docs/AUDITORIA.md).
 
 ## Estrutura
 

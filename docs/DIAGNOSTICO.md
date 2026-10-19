@@ -1,6 +1,6 @@
 # Diagnóstico de falhas
 
-Organizei este diagnóstico a partir da resposta HTTP ou do identificador da mensagem para localizar a etapa que falhou sem depender de payloads nos logs. Em requisições autenticadas, a API gera `X-Correlation-Id`; esse valor identifica os logs da requisição e fica nos eventos produzidos. Cada recebimento SQS gera uma correlação própria. A identidade financeira e a inbox continuam sendo as referências entre reentregas.
+A resposta HTTP e o identificador da mensagem permitem localizar a etapa que falhou sem depender de payloads nos logs. Em requisições autenticadas, a API gera `X-Correlation-Id`; esse valor identifica os logs da requisição e fica nos eventos produzidos. Cada recebimento SQS gera uma correlação própria. A identidade financeira e a inbox continuam sendo as referências entre reentregas.
 
 ## Estado dos serviços
 
@@ -36,7 +36,7 @@ Migrations precisam terminar com sucesso antes de a API iniciar. Divergência de
 | `receiveCount`, `attempt` | Recebimentos da mensagem ou tentativas da outbox |
 | `retryDelaySeconds`, `retryDelayMs` | Espera solicitada para a próxima tentativa, conforme o worker |
 
-Escolhi registrar tipos, códigos e identificadores técnicos em vez de mensagens brutas de exceção, que podem incluir credenciais ou valores financeiros. Não registro tokens, receipts SQS, connection strings nem payloads financeiros. Para erros sem tipo conhecido, use `stage`, `errorType`, os identificadores e o teste correspondente para localizar a origem no código.
+Os logs registram tipos, códigos e identificadores técnicos, sem mensagens brutas de exceção, tokens, receipts SQS, connection strings ou payloads financeiros. Para erros sem tipo conhecido, use `stage`, `errorType`, os identificadores e o teste correspondente para localizar a origem no código.
 
 ## HTTP
 
@@ -47,6 +47,15 @@ Escolhi registrar tipos, códigos e identificadores técnicos em vez de mensagen
 `42P01`, `42703` e `42883` indicam schema/deploy incompleto: geram indisponibilidade e rollback, sem consumir a identidade em `FAILED`. Corrija as migrations e repita a mesma chave e payload. No SQS, confira a DLQ se o reparo exceder o número de recebimentos permitido.
 
 As etapas indicam a operação: `open_wallet`, `read_wallet`, `process_wager`, `read_transaction`, `read_ledger` ou `reconcile_wallet`. Falhas técnicas não expõem detalhes na resposta ao cliente.
+
+## Falha terminal FAILED
+
+`FAILED` é uma falha técnica auditada, distinta de `REJECTED` por regra de negócio. Corrigir a causa ou reenviar a mensagem original não reabre o resultado terminal.
+
+1. Localize a transação e a causa por `transactionId`, correlação e SQLSTATE. Confira saldo, ledger, inbox e outbox e execute a reconciliação.
+2. Corrija a causa de implementação ou infraestrutura, preservando o terminal, seu hash e seu código de falha. Não altere status ou saldo por SQL para forçar replay.
+3. Se a mensagem chegou à DLQ, mantenha o vínculo com a investigação: reenviar a mesma identidade continuará retornando `FAILED`.
+4. Se o negócio exigir uma nova movimentação, ela precisa ser uma nova operação, com novos ID externo e chave, rastreada ao incidente e definida após a conferência financeira. Não existe recuperação automática de `FAILED` neste projeto.
 
 ## Consumidor SQS
 
@@ -69,6 +78,8 @@ A ausência de `sqs_completed` após `sqs_processed` exige conferir a confirmaç
 `outbox_retry_schedule_failed` e `reference_retry_schedule_failed` indicam falha ao persistir a próxima tentativa; o lease continua sendo o mecanismo de retomada. Reservas perdidas são registradas em DEBUG como `outbox_lease_lost`, `outbox_retry_lease_lost` ou `reference_retry_lease_lost`. O worker antigo não confirma nem reagenda um lease vencido, liberado ou reassumido.
 
 `reference_retry`, na etapa `resume_reference`, informa falhas técnicas na retomada de uma transação pendente. `reference_failed` indica que uma falha permanente foi auditada e encerrou a referência em `FAILED`. A resolução ou rejeição da referência deve ser conferida na consulta da transação. Falhas nas consultas de métricas geram `outbox_stats_failed` ou `dlq_stats_failed`; o último valor da métrica pode estar desatualizado.
+
+A DLQ é consultada inicialmente e depois com pausa de `DLQ_POLL_INTERVAL` (30s por padrão), em um ciclo independente do backlog. A métrica é aproximada e pode refletir a amostra anterior durante esse intervalo; a consulta de prontidão às filas permanece independente.
 
 Para backlog, compare `rate(wager_outbox_published_total[1m])` com a taxa de eventos produzidos, quantidade pendente e idade do mais antigo. Use os histogramas `wager_outbox_claim_duration_seconds`, `wager_outbox_send_duration_seconds` e `wager_outbox_confirm_duration_seconds` para separar custo de reserva, envio e confirmação. As amostras incluem tentativas malsucedidas. `wager_database_pool_acquired_connections`, `wager_database_pool_max_connections` e `wager_database_pool_empty_acquire_wait_seconds_total` ajudam a identificar saturação. São amostradas pelo publisher, com pausa de um segundo; avalie cada processo e não some os gauges globais de pendências entre réplicas.
 

@@ -1,10 +1,10 @@
 # Cenários de validação
 
-Montei a suíte com PostgreSQL, Keycloak e LocalStack reais para verificar o estado confirmado no banco e o comportamento das filas. Os processos Go compartilham banco e filas, com portas HTTP próprias. Os comandos e o isolamento estão em [TESTES.md](TESTES.md); este documento relaciona cada cenário à garantia que ele verifica.
+A suíte usa PostgreSQL, Keycloak e LocalStack reais para verificar o estado confirmado no banco e o comportamento das filas. Os processos Go compartilham banco e filas, com portas HTTP próprias. Os comandos e o isolamento estão em [TESTES.md](TESTES.md); este documento relaciona cada cenário à garantia que ele verifica.
 
 Na execução local de 19/10/2026, `make check build`, `make test-integration` e `make test-failover` passaram. O Docker local iniciou saudável com schema na versão 4. Uma demonstração com abertura, BET e WIN por HTTP, nova BET por SQS e replays terminou com saldo `80.00`, quatro lançamentos reconciliados, inbox concluída e nenhuma pendência de publicação.
 
-Na revisão da auditoria, os três comandos passaram novamente, incluindo os novos cenários de lease, schema e carga sustentada. Uma instalação em projeto Docker separado, com volumes novos, também passou em abertura, BET, replay, isolamento e reconciliação. As alterações e evidências dessa revisão estão em [AUDITORIA.md](AUDITORIA.md).
+Na primeira revisão da auditoria, os três comandos passaram novamente, incluindo cenários de lease, schema e carga sustentada. Uma instalação com volumes novos também passou em abertura, BET, replay, isolamento e reconciliação. O [registro anterior](historico/AUDITORIA_ANTERIOR.md) preserva essas evidências; a [segunda revisão](AUDITORIA.md) registra as mudanças posteriores.
 
 ## Financeiro e autorização
 
@@ -53,7 +53,7 @@ A restauração de referências é verificada pelo estado final e pelo único la
 | `TestShutdownReleasesInFlightSQSMessage` | SIGTERM cancela o processamento bloqueado e libera uma mensagem com visibilidade de trinta segundos para retomada imediata |
 | `TestShutdownRecoversUnconfirmedPublication` | O broker recebe o evento, a resposta é interrompida pelo shutdown e outro publisher confirma o mesmo evento |
 
-Usei pausas nos containers para interromper respostas reais do banco e do broker, preservando seus dados. Nos cenários de shutdown, também confiro nos logs a sequência de encerramento do HTTP, dos workers e do pool PostgreSQL.
+Pausas nos containers interrompem respostas reais do banco e do broker, preservando seus dados. Nos cenários de shutdown, os testes também conferem nos logs a sequência de encerramento do HTTP, dos workers e do pool PostgreSQL.
 
 ## Limites das evidências
 
@@ -61,7 +61,7 @@ Esses cenários demonstram processos independentes no mesmo host e broker emulad
 
 ## Desempenho
 
-Criei um teste de carga com a mesma quantidade de operações em uma instância com cem carteiras, três instâncias com cem carteiras e três instâncias disputando uma carteira. O comando, os parâmetros, as métricas e os resultados medidos estão em [BENCHMARK.md](BENCHMARK.md).
+O teste de carga compara a mesma quantidade de operações em uma instância com cem carteiras, três instâncias com cem carteiras e três instâncias disputando uma carteira. O comando, os parâmetros, as métricas e os resultados medidos estão em [BENCHMARK.md](BENCHMARK.md).
 
 `TestOutboxSustainedLoad` executa os três perfis na integração normal: 60 requisições a 20/s, recuperação em até trinta segundos e conferência de todos os eventos no SQS, com IDs, bytes e ordem por carteira. `TestFinancialLoad`, habilitado pelos benchmarks, mede os mesmos critérios com carga configurável e separa os intervalos HTTP e de publicação integral.
 

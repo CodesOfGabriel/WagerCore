@@ -1,10 +1,10 @@
 # Arquitetura
 
-Concentrei no domínio as regras de dinheiro, carteira, transação, ledger e eventos para mantê-las independentes do transporte e do banco. Usei a aplicação para coordenar os casos de uso e os adapters para implementar PostgreSQL, HTTP, OIDC e SQS. Mantive a composição e o ciclo de vida das dependências no Fx.
+O domínio concentra as regras de dinheiro, carteira, transação, ledger e eventos, independentes do transporte e do banco. A aplicação coordena os casos de uso; os adapters implementam PostgreSQL, HTTP, OIDC e SQS. Fx controla composição e ciclo de vida das dependências.
 
 ## Uma unidade de confirmação
 
-Criei `Manager.Within` para abrir uma transação `READ COMMITTED` e entregar um repositório vinculado ao mesmo `pgx.Tx`. Nenhuma gravação do caso de uso confirma sozinha. Abertura positiva confirma carteira, `OPENING`, crédito no ledger e dois eventos. Uma entrada SQS também confirma a inbox nesse commit.
+`Manager.Within` abre uma transação `READ COMMITTED` e entrega um repositório vinculado ao mesmo `pgx.Tx`. Nenhuma gravação do caso de uso confirma sozinha. Abertura positiva confirma carteira, `OPENING`, crédito no ledger e dois eventos. Uma entrada SQS também confirma a inbox nesse commit.
 
 Parsing, autorização e hash ocorrem antes da transação. O processamento procura a identidade financeira e, para operações novas, bloqueia a carteira com `FOR UPDATE` antes de reservar a transação. Essa ordem evita upgrades concorrentes dos locks adquiridos pelas chaves estrangeiras. `ON CONFLICT DO NOTHING` resolve a disputa de identidade; o perdedor consulta o registro confirmado e verifica o replay.
 
@@ -34,7 +34,7 @@ O banco protege saldo não negativo, identidades financeiras, abertura única, a
 
 ## Identidade e replay
 
-Defini duas identidades únicas, ambas no escopo do provedor: `(providerId, idempotencyKey)` e `(providerId, externalTransactionId)`. Chave, ID externo e hash precisam coincidir para um replay. Trocar a chave do mesmo ID externo também é conflito.
+Há duas identidades únicas, ambas no escopo do provedor: `(providerId, idempotencyKey)` e `(providerId, externalTransactionId)`. Chave, ID externo e hash precisam coincidir para um replay. Trocar a chave do mesmo ID externo também é conflito.
 
 O hash é SHA-256 do JSON UTF-8 canônico produzido com mapas de chaves ordenadas. Inclui `providerId`, `externalTransactionId`, `playerId`, `walletId`, `roundId`, `gameId`, `kind`, `money.amount`, `money.currency` e a referência quando preenchida. A ordenação também se aplica ao objeto `money`.
 
@@ -44,17 +44,19 @@ O resultado guarda o saldo observado no processamento. Um replay terminal retorn
 
 ## Falhas transitórias e permanentes
 
-Separei indisponibilidade de falha permanente para que um timeout não encerre uma operação que ainda pode ser processada. Perda de conexão, cancelamento, deadlock e falha de serialização continuam recuperáveis: o HTTP retorna `503` quando não há resultado confirmado, e o consumidor mantém a mensagem para reentrega.
+Indisponibilidade e falha permanente têm tratamentos distintos para que um timeout não encerre uma operação recuperável. Perda de conexão, cancelamento, deadlock e falha de serialização permitem retry: o HTTP retorna `503` quando não há resultado confirmado, e o consumidor mantém a mensagem para reentrega.
 
-Classifiquei como permanentes os erros SQL `23514`, `23503`, `22003` e `22P02`: restrição de integridade, chave estrangeira, overflow e representação inválida. A entrada já passou pelo domínio; uma violação dessas no adapter indica que a operação não pode ser confirmada conforme o contrato de persistência. A política é conservadora: registra a tentativa para investigação, sem repetir automaticamente uma operação que violou invariantes. Esses códigos são retornados pelo servidor e confirmam que a transação não teve sucesso; falhas de rede durante o commit não entram nessa classificação.
+Os erros SQL `23514`, `23503`, `22003` e `22P02` são permanentes: restrição de integridade, chave estrangeira, overflow e representação inválida. A entrada já passou pelo domínio; uma violação dessas no adapter indica que a operação não pode ser confirmada conforme o contrato de persistência. A política registra a tentativa para investigação, sem repetir automaticamente uma operação que violou invariantes. Esses códigos são retornados pelo servidor e confirmam que a transação não teve sucesso; falhas de rede durante o commit não entram nessa classificação.
 
 Tabela (`42P01`), coluna (`42703`) ou função (`42883`) ausentes são falhas operacionais de schema/deploy. Elas fazem rollback e retornam indisponibilidade, preservando a identidade para retry depois da correção das migrations. No SQS, a mensagem continua sujeita às cinco tentativas e pode chegar à DLQ antes do reparo; nesse caso, exige reenvio operacional após corrigir o schema. Não há garantia de recuperação automática após esgotar a política do broker.
 
-Quando uma operação externa válida encontra um desses erros, primeiro concluo o rollback. Depois, abro outra transação, bloqueio a carteira e confiro novamente a identidade financeira. Se outra instância já tiver confirmado um resultado, devolvo esse resultado. Caso contrário, registro `FAILED` com `INFRASTRUCTURE_FAILURE`, sem saldo de resultado, movimento, ledger ou evento financeiro. Na entrada SQS, a inbox fica vinculada a essa auditoria no mesmo commit. Se o banco não permitir salvar a auditoria, devolvo indisponibilidade e preservo a possibilidade de nova tentativa.
+Quando uma operação externa válida encontra um desses erros, a aplicação conclui o rollback e abre outra transação. Após bloquear a carteira, confere novamente a identidade financeira: retorna um resultado já confirmado por outra instância ou registra `FAILED` com `INFRASTRUCTURE_FAILURE`, sem saldo de resultado, movimento, ledger ou evento financeiro. Na entrada SQS, a inbox fica vinculada à auditoria no mesmo commit. Se a auditoria não puder ser salva, retorna indisponibilidade e permite nova tentativa.
 
-`FAILED` é terminal, inclusive depois de corrigir a infraestrutura: replay não tenta movimentar a carteira. No HTTP, retorno `500` com o resultado persistido. No SQS, mantenho as reentregas até a DLQ para investigação; uma inbox concluída com falha permanente não autoriza remover essa mensagem. Uma referência pendente pode seguir a mesma política, desde que o worker ainda possua um lease válido.
+`FAILED` é terminal, inclusive depois de corrigir a infraestrutura: replay não tenta movimentar a carteira. O HTTP retorna `500` com o resultado persistido. No SQS, as reentregas seguem até a DLQ para investigação; uma inbox concluída com falha permanente não autoriza remover essa mensagem. Uma referência pendente pode seguir a mesma política, desde que o worker ainda possua um lease válido.
 
-O log da primeira falha registra o código SQL e os identificadores; a transação guarda o código de falha estável. Os eventos financeiros definidos neste projeto descrevem processamento, rejeição de negócio, pendência e mudança de saldo. Não publico um desses eventos como se uma falha de infraestrutura fosse uma rejeição de negócio.
+`FAILED` representa falha técnica auditada e não substitui `REJECTED`, que representa uma recusa de negócio. Uma correção de código ou deploy não reabre a transação. A investigação deve preservar o terminal, reconciliar o histórico e definir se há necessidade de uma nova operação de negócio; o procedimento está em [DIAGNOSTICO.md](docs/DIAGNOSTICO.md#falha-terminal-failed).
+
+O log da primeira falha registra o código SQL e os identificadores; a transação guarda o código de falha estável. Os eventos financeiros definidos neste projeto descrevem processamento, rejeição de negócio, pendência e mudança de saldo. Falha de infraestrutura não produz um evento de rejeição de negócio.
 
 ## Referências fora de ordem
 
@@ -70,13 +72,15 @@ Cada evento tem tipo concreto, ID estável, aggregate, correlação, causação 
 
 Movimentos geram `WagerTransactionProcessed` e `WalletBalanceChanged`. `LOSS` gera apenas o primeiro. Rejeições geram `WagerTransactionRejected`; a primeira pendência gera `WagerTransactionPendingReference`. `OPENING` omite metadados externos inaplicáveis.
 
-Adicionei à outbox uma sequência persistida e um índice das pendências por carteira para preservar a ordem de publicação entre instâncias. O publisher reserva apenas o primeiro evento ainda não publicado de cada carteira. Isso preserva a ordem também com vários publishers, mantendo carteiras diferentes em paralelo. Uma falha temporária pode atrasar eventos posteriores da mesma carteira.
+A outbox usa sequência persistida e índice das pendências por carteira para preservar a ordem de publicação entre instâncias. O publisher reserva apenas o primeiro evento ainda não publicado de cada carteira. Isso preserva a ordem também com vários publishers, mantendo carteiras diferentes em paralelo. Uma falha temporária pode atrasar eventos posteriores da mesma carteira.
 
 O envio ocorre após o commit. Só o proprietário de um lease válido confirma `published_at`. Se o processo cair após enviar, outro publisher reenviará o mesmo snapshot e `eventId`; o protocolo é de entrega ao menos uma vez. Consumidores devem deduplicar por `eventId`, mesmo que FIFO suprima repetições dentro de sua janela de deduplicação.
 
 Reagendar publicação ou referência também exige token e lease ainda válido. Os dois métodos conferem exatamente uma linha atualizada; ausência, conclusão, expiração ou retomada por outro worker retornam `ErrLeaseLost`. O proprietário antigo não pode adiar o trabalho reassumido.
 
-Enquanto encontra trabalho, o publisher reserva o próximo lote imediatamente. `WORKER_INTERVAL` controla a espera quando não há candidatos ou a consulta falha. Estatísticas da outbox, pool e DLQ são coletadas em um ciclo separado, com pausa de um segundo, sem condicionar cada lote a uma consulta ao broker. A concorrência continua limitada a `WORKER_CONCURRENCY`, com um evento por carteira em cada reserva.
+Enquanto encontra trabalho, o publisher reserva o próximo lote imediatamente. `WORKER_INTERVAL` controla a espera quando não há candidatos ou a consulta falha. Estatísticas de outbox e pool têm ciclo separado, com pausa de 1s; a DLQ tem outro ciclo, com pausa definida por `DLQ_POLL_INTERVAL` (30s por padrão, faixa de 1s a 1h). Nenhum lote depende dessas consultas. A concorrência continua limitada a `WORKER_CONCURRENCY`, com um evento por carteira em cada reserva.
+
+Cada evento usa `SendMessage` individual. Adotar `SendMessageBatch` exigiria confirmação e retry por item em respostas parcialmente bem-sucedidas, preservando a ordem por carteira; essa otimização permanece fora do fluxo atual.
 
 ## SQS
 
@@ -100,7 +104,9 @@ Cada processo usa até dez conexões por padrão. Os três workers têm concorr�
 
 O padrão do lease e da visibilidade é trinta segundos. O publisher tem prazo de cinco segundos por item; o consumidor tem dez. Falhas de publicação usam backoff com intervalo base limitado a trinta segundos e jitter de até 25%, sem descartar eventos confirmados no banco. Mensagens SQS ficam sujeitas à política de DLQ.
 
-O encerramento para de aceitar HTTP, aguarda requisições no prazo, cancela polling e jobs e fecha as conexões. Validei essa ordem com SIGTERM durante requisição bloqueada, mensagem em processamento e envio ao broker sem confirmação local. Trabalho interrompido é recuperado por rollback, expiração de lease ou visibilidade. Readiness verifica banco e filas; a inicialização também exige JWKS disponível. A verificação criptográfica usa RS256, emissor, audience, expiração, `nbf`, subject e permissões do cliente.
+Em `production`, a validação considera os workers ativos: publisher/referências exigem lease superior à soma de reserva (5s), processamento (5s) e limpeza (2s); consumidor exige visibilidade superior a processamento (10s) e limpeza (2s). Os deadlines são compartilhados entre configuração e execução. Janelas acima de 12s evitam configurações que expirem durante uma tentativa normal; o padrão de 30s mantém margem adicional. A validação não substitui dimensionamento para latência de rede e pausas do processo. `local` e `test` permitem janelas curtas para os ensaios de recuperação.
+
+O encerramento para de aceitar HTTP, aguarda requisições no prazo, cancela polling e jobs e fecha as conexões. Os testes verificam essa ordem com SIGTERM durante requisição bloqueada, mensagem em processamento e envio ao broker sem confirmação local. Trabalho interrompido é recuperado por rollback, expiração de lease ou visibilidade. Readiness verifica banco e filas; a inicialização também exige JWKS disponível. A verificação criptográfica usa RS256, emissor, audience, expiração, `nbf`, subject e permissões do cliente.
 
 O readiness conjunto atende ao contrato do desafio: SQS indisponível retira a instância do tráfego, mesmo que uma chamada HTTP direta ainda pudesse confirmar saldo, ledger e outbox no PostgreSQL. A outbox permite acumular eventos duráveis, mas não altera a decisão do balanceador. Separar readiness de API e workers em produção exigiria definir limites de backlog, alertas e capacidade de recuperação; essa separação não está implementada.
 

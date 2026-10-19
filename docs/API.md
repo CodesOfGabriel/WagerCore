@@ -1,6 +1,6 @@
 # API
 
-Separei os contratos neste documento para manter corpos de requisição, respostas e permissões em um único lugar. Deixei os exemplos de inicialização e obtenção de tokens no [README](../README.md). Todas as respostas de negócio incluem `X-Correlation-Id`. Os corpos JSON aceitam até 64 KiB e rejeitam campos desconhecidos. Valores monetários usam `{"amount":"25.00","currency":"BRL"}`.
+Este documento reúne corpos de requisição, respostas e permissões. Os exemplos de inicialização e obtenção de tokens estão no [README](../README.md). Todas as respostas de negócio incluem `X-Correlation-Id`. Os corpos JSON aceitam até 64 KiB e rejeitam campos desconhecidos. Valores monetários usam `{"amount":"25.00","currency":"BRL"}`.
 
 ## Permissões
 
@@ -104,6 +104,8 @@ Reenviar a mesma identidade e conteúdo retorna `idempotentReplay: true`, com o 
 | `WALLET_VERSION_EXHAUSTED` | Movimento ultrapassaria o limite da versão |
 
 Uma falha permanente de persistência que pôde ser auditada retorna `500` com `status: "FAILED"`, `failureCode: "INFRASTRUCTURE_FAILURE"`, ID da transação e indicação de replay. Não há campo `balance`, pois a operação não concluiu um movimento. A repetição mantém esse resultado terminal. Falhas transitórias continuam usando `503`, sem transformar a operação em `FAILED`.
+
+`FAILED` indica falha técnica; `REJECTED` indica uma recusa de negócio. Um reparo posterior não reabre `FAILED`. A investigação e eventual nova operação seguem o [procedimento operacional](DIAGNOSTICO.md#falha-terminal-failed), sem alteração do terminal.
 
 ## Consultas e paginação
 

@@ -247,6 +247,9 @@ func TestThreeProcessesConcurrentBets(t *testing.T) {
 	id := ""
 	for result := range results {
 		if result.err != nil || result.status != 200 {
+			for i, server := range servers {
+				t.Logf("server %d logs: %v", i, server.entries())
+			}
 			t.Fatalf("concurrent response=%+v %s", result, result.body)
 		}
 		var body application.WagerResult

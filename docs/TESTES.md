@@ -1,6 +1,6 @@
 # Testes
 
-Separei os testes sem infraestrutura dos testes de integração para verificar as regras locais rapidamente e reservar PostgreSQL, Keycloak e SQS aos cenários que precisam desses serviços. Execute os comandos na raiz do repositório, com Go 1.27.2. O race detector exige CGO habilitado e compilador C disponível. A integração também exige Docker com Compose v2 e as portas 55432, 58081 e 54566 livres.
+A suíte sem infraestrutura verifica regras locais; a integração usa PostgreSQL, Keycloak e SQS reais. Execute os comandos na raiz do repositório, com Go 1.27.2. O race detector exige CGO habilitado e compilador C disponível. A integração também exige Docker com Compose v2 e as portas 55432, 58081 e 54566 livres.
 
 ## Verificações sem infraestrutura externa
 
@@ -17,7 +17,7 @@ make build
 | `make check` | Os três alvos anteriores | Verificação conjunta |
 | `make build` | Build de `cmd/server` e `cmd/migrate` | Binários em `bin/` |
 
-Usei servidores HTTP temporários nessa suíte para verificar JWT, handlers e erros do SDK. Esses testes não exigem PostgreSQL, Keycloak ou LocalStack. A tag `integration` fica excluída; portanto, passar em `make check` não comprova o fluxo financeiro com banco e filas reais.
+Servidores HTTP temporários verificam JWT, handlers e erros do SDK. Esses testes não exigem PostgreSQL, Keycloak ou LocalStack. A tag `integration` fica excluída; portanto, passar em `make check` não comprova o fluxo financeiro com banco e filas reais.
 
 Para repetir a suíte sem aproveitar o cache de resultados:
 
@@ -31,11 +31,11 @@ go test -race -count=1 ./...
 make test-integration
 ```
 
-Criei `scripts/test-integration.sh` para controlar o ciclo de vida do ambiente. O script registra a limpeza antes de iniciar as dependências, sobe `docker-compose.test.yml` no projeto `jungle-tests` e aguarda os health checks. Depois, executa a suíte com race detector, tag `integration`, cache de resultados desabilitado e timeout de cinco minutos.
+`scripts/test-integration.sh` controla o ciclo de vida do ambiente. O script registra a limpeza antes de iniciar as dependências, sobe `docker-compose.test.yml` no projeto `jungle-tests` e aguarda os health checks. Depois, executa a suíte com race detector, tag `integration`, cache de resultados desabilitado e timeout de cinco minutos.
 
-Quando os testes passam, removo os containers e a rede desse projeto com `docker compose down`. Se a preparação ou os testes falharem, exibo os últimos cem registros de cada serviço e mantenho o ambiente disponível para investigação. Também preservo os containers quando o script recebe SIGINT ou SIGTERM. Mantenho o status de falha; se os testes passarem, mas a limpeza falhar, a execução também retorna erro.
+Após sucesso, o script remove os containers e a rede com `docker compose down`. Falhas e interrupções preservam o ambiente e exibem os últimos cem registros de cada serviço. Erro de preparação, teste ou limpeza mantém o status de falha.
 
-Defini os endereços de teste no Makefile e um endereço PostgreSQL padrão no script para permitir sua execução direta. A suíte usa pgx contra PostgreSQL, obtém tokens por client credentials no Keycloak e envia e recebe mensagens pelo SDK do SQS no LocalStack. Os cenários HTTP iniciam processos Go a partir do próprio binário de testes, em portas atribuídas pelo sistema. Não é necessário executar `make run` ou iniciar a API no Compose local.
+O Makefile define os endereços de teste; o script fornece um endereço PostgreSQL padrão para execução direta. A suíte usa pgx contra PostgreSQL, obtém tokens por client credentials no Keycloak e envia e recebe mensagens pelo SDK do SQS no LocalStack. Os cenários HTTP iniciam processos Go a partir do próprio binário de testes, em portas atribuídas pelo sistema. Não é necessário executar `make run` ou iniciar a API no Compose local.
 
 | Recurso | Isolamento e limpeza |
 | --- | --- |
@@ -46,11 +46,11 @@ Defini os endereços de teste no Makefile e um endereço PostgreSQL padrão no s
 
 O usuário PostgreSQL de teste precisa criar e remover schemas. Não aponte essa suíte para banco ou filas usados pela aplicação: há testes de DDL, alteração deliberada de dados e limpeza de mensagens. Não execute duas suítes de integração simultaneamente no mesmo ambiente de teste.
 
-Mantive o PostgreSQL de teste em armazenamento temporário para que uma execução iniciada após a remoção dos containers comece com um banco vazio. O encerramento automático não remove os volumes do ambiente local.
+O PostgreSQL de teste usa armazenamento temporário: remover os containers garante banco vazio na próxima execução. O encerramento automático não remove os volumes do ambiente local.
 
 ## Executar grupos ou um cenário
 
-Configurei os dois alvos abaixo com a mesma preparação automática, limpeza após sucesso e preservação do ambiente em caso de falha:
+Os dois alvos abaixo usam a mesma preparação automática, limpeza após sucesso e preservação do ambiente em caso de falha:
 
 ```sh
 make test-concurrency
@@ -64,7 +64,7 @@ make test-failover
 
 Esses alvos também usam race detector e `-count=1`, com limite de três minutos. São recortes da suíte completa, não verificações adicionais obrigatórias após `make test-integration`.
 
-Para executar um teste específico, passo os filtros ao mesmo script:
+Para executar um teste específico, passe os filtros ao mesmo script:
 
 ```sh
 ./scripts/test-integration.sh \
@@ -73,7 +73,7 @@ Para executar um teste específico, passo os filtros ao mesmo script:
 
 O script aceita os argumentos adicionais de `go test`. `TEST_TIMEOUT` altera seu limite; os alvos de concorrência e recuperação usam três minutos. `TEST_DATABASE_URL`, `TEST_OIDC_ISSUER_URL` e `TEST_SQS_ENDPOINT` permitem ajustar os endereços, desde que correspondam ao ambiente de teste da composição.
 
-A execução direta de `go test -tags=integration` não passa pelo script e não gerencia containers. Mantive a exigência de `TEST_DATABASE_URL` nessa forma de execução para impedir que a suíte escolha silenciosamente um banco. Para o uso normal, executo os alvos Make ou o script acima.
+A execução direta de `go test -tags=integration` não passa pelo script e não gerencia containers. `TEST_DATABASE_URL` é obrigatório nessa forma de execução. Para o uso normal, prefira os alvos Make ou o script acima.
 
 Para explorar parsing e aritmética de valores monetários:
 
@@ -92,9 +92,9 @@ Os cenários de recuperação usam prazos menores que os padrões da aplicação
 
 O cenário de falha na confirmação SQS usa um proxy que rejeita apenas `DeleteMessage`. PostgreSQL, Keycloak e as demais chamadas ao LocalStack continuam reais. O teste exige log na etapa `acknowledge`, financeiro já confirmado e replay após liberar a confirmação.
 
-Adicionei pausas controladas nos containers PostgreSQL e LocalStack para verificar indisponibilidade real sem perder os dados temporários do banco. Os testes sempre tentam desfazer a pausa antes de encerrar. Esses cenários exigem acesso ao mesmo Docker usado na preparação e não devem rodar em paralelo com outra suíte.
+Pausas controladas nos containers PostgreSQL e LocalStack verificam indisponibilidade real, preservando os dados temporários. Os testes sempre tentam desfazer a pausa antes de encerrar. Esses cenários exigem acesso ao mesmo Docker usado na preparação e não devem rodar em paralelo com outra suíte.
 
-Nos testes de shutdown, bloqueio uma operação no banco ou a resposta de publicação no broker antes de enviar SIGTERM. Confiro conclusão da requisição HTTP, rollback da mensagem interrompida, liberação de visibilidade e retomada da publicação com o mesmo evento.
+Nos testes de shutdown, uma operação no banco ou a resposta de publicação no broker fica bloqueada antes do SIGTERM. Os testes verificam conclusão da requisição HTTP, rollback da mensagem interrompida, liberação de visibilidade e retomada da publicação com o mesmo evento.
 
 No SQS, os testes usam IDs de deduplicação de transporte distintos em alguns reenvios. Assim, a correção precisa vir da inbox e da identidade financeira, sem depender apenas da janela de deduplicação FIFO. Mensagens inválidas precisam chegar à DLQ após a política de recebimentos.
 
@@ -105,9 +105,9 @@ docker compose -p jungle-tests -f docker-compose.test.yml ps
 docker compose -p jungle-tests -f docker-compose.test.yml logs -f --tail=100
 ```
 
-Depois de investigar, executo `make test-deps-down` para liberar os recursos. Preservar os containers não altera a limpeza dos schemas nem o encerramento dos processos Go realizados pelos próprios testes; os dados de cada schema continuam sendo removidos ao final do cenário.
+Depois da investigação, execute `make test-deps-down` para liberar os recursos. Preservar os containers não altera a limpeza dos schemas nem o encerramento dos processos Go realizados pelos próprios testes; os dados de cada schema continuam sendo removidos ao final do cenário.
 
-Mantive os comandos abaixo apenas para inspecionar as dependências manualmente, fora de uma execução de testes:
+Os comandos abaixo permitem inspecionar as dependências fora de uma execução de testes:
 
 ```sh
 make test-deps-up
@@ -116,7 +116,7 @@ docker compose -p jungle-tests -f docker-compose.test.yml logs --tail=100 postgr
 make test-deps-down
 ```
 
-`test-db-up` e `test-db-down` executam a mesma preparação e encerramento dos três serviços. Essa inspeção manual exige o encerramento explícito. Se o script for encerrado com SIGKILL ou o Docker não responder durante a limpeza, executo `make test-deps-down` quando o daemon estiver disponível.
+`test-db-up` e `test-db-down` executam a mesma preparação e encerramento dos três serviços. Essa inspeção manual exige o encerramento explícito. Se o script for encerrado com SIGKILL ou o Docker não responder durante a limpeza, execute `make test-deps-down` quando o daemon estiver disponível.
 
 `connection refused` indica endereço inacessível ou serviço ainda não iniciado. Falha em client credentials exige conferir importação do realm, client e secret. Um timeout de cenário exige examinar o estado do processo e as etapas de retry; não aumente o prazo antes de identificar o bloqueio. O [guia de diagnóstico](DIAGNOSTICO.md) descreve os campos dos logs.
 
@@ -128,6 +128,6 @@ make test-deps-down
 
 ## Integração contínua
 
-Criei `.github/workflows/test.yml` com dois jobs. No primeiro, verifico formatação, dependências, testes, race detector, análise estática e build. No segundo, executo `make test-integration`, com a mesma regra de encerramento após sucesso. Centralizei esse comportamento no script e deixei os logs de falha na saída do job.
+`.github/workflows/test.yml` tem dois jobs: `unit` verifica formatação, dependências, testes, race detector, análise estática e build; `integration` executa `make test-integration`, com logs e limpeza controlados pelo mesmo script local.
 
 A CI valida processos no mesmo host com SQS emulado. Não representa um ensaio de indisponibilidade regional da AWS ou de um cluster PostgreSQL.

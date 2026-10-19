@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
@@ -55,5 +56,54 @@ func TestInvalidMessageLogsDecodeAndVisibilityFailure(t *testing.T) {
 	// A mensagem inválida não deve alcançar processamento financeiro nem DeleteMessage.
 	if strings.Contains(logged, "private-") {
 		t.Fatalf("sensitive details leaked: %s", logs.String())
+	}
+}
+
+func TestDLQStatsPollIntervalAndShutdown(t *testing.T) {
+	calls := make(chan time.Time, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.Header.Get("X-Amz-Target"), ".GetQueueAttributes") {
+			t.Error("unexpected broker operation")
+		}
+		calls <- time.Now()
+		w.Header().Set("Content-Type", "application/x-amz-json-1.0")
+		_, _ = io.WriteString(w, `{"Attributes":{"ApproximateNumberOfMessages":"7"}}`)
+	}))
+	defer server.Close()
+	client := sqs.NewFromConfig(aws.Config{Region: "us-east-1", Credentials: credentials.NewStaticCredentialsProvider("test", "test", "")}, func(o *sqs.Options) {
+		o.BaseEndpoint = aws.String(server.URL)
+		o.RetryMaxAttempts = 1
+	})
+	cfg := config.Defaults()
+	cfg.DLQPollInterval = 100 * time.Millisecond
+	runtime := &Runtime{cfg: cfg, broker: &broker.Broker{Client: client, DLQURL: server.URL + "/dlq"}, metrics: telemetry.New(), logger: slog.New(slog.NewJSONHandler(io.Discard, nil))}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { defer close(done); runtime.dlqStats(ctx) }()
+	var first time.Time
+	select {
+	case first = <-calls:
+	case <-time.After(2 * time.Second):
+		t.Fatal("initial DLQ sample missing")
+	}
+	select {
+	case second := <-calls:
+		if second.Sub(first) < cfg.DLQPollInterval {
+			t.Fatal("DLQ polled before configured interval")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("scheduled DLQ sample missing")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("DLQ monitoring did not stop on cancellation")
+	}
+	response := httptest.NewRecorder()
+	runtime.metrics.Handler().ServeHTTP(response, httptest.NewRequest("GET", "/metrics", nil))
+	if !strings.Contains(response.Body.String(), "wager_dlq_messages 7\n") {
+		t.Fatal("DLQ metric was not updated")
 	}
 }

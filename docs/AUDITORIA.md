@@ -1,48 +1,37 @@
-# Verificação da auditoria técnica
+# Verificação da segunda auditoria
 
-Revisão de 19/10/2026 sobre a base `d13e6e6`, com correções locais posteriores. A comparação usa o código, os testes reais e a execução do Compose. Os resultados antigos do benchmark foram preservados e identificados como anteriores à correção.
+Base conferida: `e5c023d39c1a5819b9152d218e599a615b893858`, em 19/10/2026. O [workflow 39293060572](https://github.com/CodesOfGabriel/WagerCore/actions/runs/39293060572) foi consultado: `unit` e `integration` concluíram com sucesso e o SHA corresponde à base local. As alterações desta revisão ainda dependem do commit e de nova CI.
 
-## Pontos verificados
+| Ponto | Verificação e decisão |
+| --- | --- |
+| 3.1 — Custo no PostgreSQL | A BET coordena identidade, carteira, transação, ledger e dois eventos, com constraints e guards financeiros. Os cinco guards citados existem e as proteções foram preservadas. Os benchmarks identificam espera de lock/pool; não isolam custo de cada trigger. Otimização de SQL exige planos com `EXPLAIN (ANALYZE, BUFFERS)` e medição representativa antes de alterar invariantes. |
+| 3.2 — Envio individual | `SendMessage` por evento é uma limitação conhecida. Batching continua opcional: exige tratar respostas parcialmente bem-sucedidas, retries individuais e ordem por carteira. A publicação mantém snapshot e `eventId` estáveis. |
+| 3.3 — Janelas inconsistentes | Configuração de produção valida os prazos completos dos workers ativos. Lease deve superar reserva + processamento + limpeza; visibilidade deve superar processamento + limpeza. Os deadlines são compartilhados entre validação e execução. `local`/`test` preservam janelas curtas. |
+| 3.4 — Polling da DLQ | DLQ tem ciclo independente, padrão 30s, configurável por `DLQ_POLL_INTERVAL` entre 1s e 1h. Outbox/pool mantêm pausa de 1s. Testes verificam periodicidade, atualização da métrica e cancelamento. |
+| 3.5 — `FAILED` terminal | Política preservada e procedimento operacional esclarecido. `FAILED` é falha técnica auditada; `REJECTED` é recusa de negócio. Corrigir infraestrutura ou reenviar a mesma identidade não reabre um terminal. |
+| 4 — Organização e apresentação | Workers separados em runtime, publisher, consumer e referências, sem novas interfaces. Documentação passou a tom objetivo; README prioriza os documentos de uso; histórico foi movido para anexos. Dividir aplicação/repositório permanece opcional, sem reescrever os fluxos financeiros nesta entrega. |
+| 5 — Nome da medição | O JSON usa `financialToPublishedSeconds` e `financialToPublishedRequestsPerSecond`; os logs e a documentação indicam término na confirmação de publicação. Conferência no destino não é processamento downstream. Resultados históricos mantêm sua identificação. |
 
-| Ponto da auditoria | Constatação e alteração | Verificação |
-| --- | --- | --- |
-| 2.1 — Gargalo da outbox | O publisher aguardava 200 ms e consultava a DLQ após cada lote, mesmo ocupado. Agora reserva o próximo lote imediatamente; as estatísticas têm ciclo próprio. Concorrência quatro, pool dez e ordem por carteira foram preservados. | Carga em um e três processos; histogramas de reserva, envio e confirmação; métricas de saturação do pool. |
-| 2.2 — Retry sem conferir linhas | Os dois métodos podiam retornar sucesso com zero alterações. Agora exigem token, lease válido e exatamente uma linha alterada; retornam `ErrLeaseLost` nos demais casos. | `TestRetryLeaseFencing` e `TestMessagingRetentionOrderingAndLeaseFencing`, com PostgreSQL real. |
-| 2.3 — Benchmark sem drenagem | O benchmark anterior encerrava com eventos pendentes. Agora aguarda publicação integral e confere IDs, bytes e ordem no SQS antes da limpeza. | `TestOutboxSustainedLoad` na integração/CI; `make benchmark` e `make benchmark-e2e`, com relatório de produção, publicação e recuperação. |
-| 2.4 — Defaults locais em produção | `APP_ENV=production` remove os defaults de OIDC/SQS/credenciais, exige identidade explícita por HTTPS e recusa hosts locais e credenciais `test`. Produção usa a cadeia AWS, incluindo sessão e roles. | Testes de configuração e `TestProductionPreservesAWSSessionCredentials`. |
-| 2.5 — Readiness depende de SQS | Comportamento mantido conforme o contrato. Documentado que o balanceador pode retirar a API mesmo quando o PostgreSQL ainda permitiria confirmar a operação e sua outbox. | `TestSQSOutageRetainsCommittedEvents` observa readiness `503`, BET direta confirmada e dois eventos pendentes que depois são publicados; justificativa em `ARCHITECTURE.md`. |
-| 2.6 — Política de `FAILED` | `42P01`, `42703` e `42883` passam a indisponibilidade recuperável. Violações `23514`, `23503`, `22003` e `22P02` continuam terminais por decisão explícita de integridade. | `TestDatabaseFailureClassification`, `TestSchemaFailureCanBeRetriedAfterRepair` por HTTP/SQS e testes de falha permanente, inclusive no commit e em referências. |
+A justificativa do envio individual considera o contrato de [SendMessageBatch](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/API_SendMessageBatch.html): uma resposta HTTP 200 pode conter falhas por item. Sua adoção exige testes próprios de sucesso parcial e ordem.
 
-As garantias financeiras, autenticação, idempotência, snapshots imutáveis, coordenação por carteira, inbox e recuperação continuam cobertas pelos cenários de [CENARIOS.md](CENARIOS.md). Nenhuma migration aplicada foi alterada.
+## Validação desta revisão
 
-Ao conferir o primeiro relatório sustentado, foi identificado outro problema de medição: a idade comparava `occurred_at` do banco com o relógio do host e podia ficar negativa. O benchmark e `OutboxStats` passaram a usar o horário do próprio PostgreSQL, lido na mesma consulta. `TestOutboxStatsUseDatabaseClock` verifica a faixa de idade contra duas leituras do banco e o caso de outbox vazia. Os benchmarks foram repetidos após essa correção.
+| Verificação | Resultado |
+| --- | --- |
+| `make check build` | Aprovado: testes, race detector, vet e os dois binários |
+| `make test-integration` — rodada final | Aprovado em 203,517s, incluindo três processos, falhas, recuperação e carga sustentada curta |
+| Concorrência isolada | Cinco execuções consecutivas de `TestThreeProcessesConcurrentBets` aprovadas em 29,742s |
+| Inicialização isolada | Build e quatro migrations; PostgreSQL, Keycloak, LocalStack e API saudáveis, sem volumes ou `.env` anteriores |
+| Fluxo do README | Tokens, abertura de 100, BET de 25, replay com saldo 75, dois lançamentos reconciliados e quatro eventos publicados; zero pendências; acessos indevidos bloqueados |
+| Configuração no Compose | `DLQ_POLL_INTERVAL=1m` propagado à configuração da API |
+| Arquivos versionáveis | 89 arquivos conferidos: nenhum padrão pesquisado de credencial real, artefato temporário ou arquivo ignorado já rastreado; exemplos locais revisados |
 
-## CI do commit auditado
+A primeira rodada da integração retornou um `503` no cenário de 50 replays concorrentes, enquanto o build do ambiente limpo também estava ativo. A saída original não continha os logs dos processos para confirmar a causa, e o PostgreSQL não registrou timeout ou deadlock correspondente. O teste passou a incluir esses logs em respostas inesperadas. A falha não se repetiu nas cinco rodadas isoladas nem na suíte final; nenhum prazo de requisição ou critério financeiro foi relaxado. A causa da ocorrência inicial não foi confirmada.
 
-Os jobs `unit` e `integration` do [workflow 39285992420](https://github.com/CodesOfGabriel/WagerCore/actions/runs/39285992420) foram consultados e estavam concluídos com `success`. A observação anterior de integração ainda em execução ficou desatualizada. Esse resultado corresponde ao commit auditado; as correções locais ainda precisam de uma execução remota após publicação.
+As evidências locais ficam em `.local/audit2-check.log`, `.local/audit2-integration.log`, `.local/audit2-integration-final.log`, `.local/audit2-concurrency-repeat.log`, `.local/audit2-clean-startup.log`, `.local/audit2-smoke.json` e `.local/audit2-versionable-scan.json`. Esses arquivos permanecem ignorados. Os containers de teste e o projeto temporário `wagercore-audit2-clean` foram removidos após a conferência.
 
-## Inicialização sem estado anterior
+## Entrega
 
-Foi exportada uma cópia dos fontes versionáveis para `.local/audit-clean`, sem `.env`, cache, binários anteriores ou volumes existentes. O mesmo `docker-compose.local.yml` subiu no projeto separado `wagercore-audit-clean`, com um override apenas de portas e issuer: API 18080, Keycloak 18081, SQS 14566 e PostgreSQL 15432. O ambiente de desenvolvimento existente foi preservado.
+O SHA e a tag definitivos dependem do commit do responsável pela entrega. A CI confirmada acima vale para `e5c023d`; a revisão local deve passar por nova CI depois de publicada. A conferência de arquivos versionáveis cobre credenciais reais e artefatos temporários; os valores de Keycloak/AWS/PostgreSQL versionados são exemplos locais.
 
-O build terminou; a migração retornou `version=4 changed=4`; PostgreSQL, Keycloak, LocalStack e API ficaram saudáveis. O fluxo HTTP abriu uma carteira com `100.00`, processou BET de `25.00`, devolveu replay da mesma transação com saldo `75.00` e reconciliou dois lançamentos com diferença zero. Acesso sem token retornou `401`; outro provedor não leu a transação (`404`). No banco, os quatro eventos estavam publicados e não havia pendências. O projeto temporário e seus volumes foram removidos depois da conferência.
-
-Os logs e o JSON da execução ficam em `.local/audit-clean-startup.log` e `.local/audit-smoke.json`, fora do versionamento. Foi uma instalação local isolada dos fontes em revisão; não representa validação em AWS real.
-
-## Comandos de validação
-
-`make check build` passou: testes sem infraestrutura, race detector, `go vet` e os dois binários. `make test-integration` passou em 229,999 segundos, com race detector e sem cache de resultados, incluindo a carga sustentada curta e os novos testes de regressão. O recorte `make test-failover` também passou, em 114,305 segundos. `make benchmark` passou: 600 eventos recebidos por perfil, sem erro ou divergência.
-
-Depois do ajuste da medição de idade, `make check build` foi repetido com sucesso. A regressão do relógio e os três perfis de rajada também passaram, em 92,141 segundos de suíte: a recuperação final foi de 3,41 a 9,50 segundos. A execução anterior mediu 1,98 a 4,52 segundos; a variação está registrada e não foi tratada como prova de ganho de capacidade.
-
-`make benchmark-e2e` passou e foi repetido após o ajuste de idade, usando os mesmos parâmetros e dependências já preparadas. A repetição final passou em 71,538 segundos: 400 eventos recebidos por perfil, sem erros ou divergências, idades não negativas e recuperação entre 0,09 e 0,21 segundo. As repetições finais usaram `go test -race -tags=integration`, `-count=1`, filtro de `TestFinancialLoad`/regressão do relógio e os parâmetros dos respectivos alvos Make. As dependências foram encerradas ao terminar.
-
-```sh
-make check build
-make test-integration
-make test-failover
-make benchmark
-make benchmark-e2e
-```
-
-Os dois benchmarks não impõem uma taxa arbitrária de requisições. Exigem integridade, recuperação dentro do limite configurado e recebimento dos snapshots esperados. Os resultados e limites de interpretação estão em [BENCHMARK.md](BENCHMARK.md).
+O [registro anterior](historico/AUDITORIA_ANTERIOR.md), os [cenários](CENARIOS.md) e o [diagnóstico](DIAGNOSTICO.md) são material complementar. O funcionamento e a execução estão no [README](../README.md), na [arquitetura](../ARCHITECTURE.md), na [API](API.md) e nos [testes](TESTES.md).

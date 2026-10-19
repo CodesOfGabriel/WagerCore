@@ -19,37 +19,37 @@ import (
 )
 
 type loadReport struct {
-	Scenario                  string  `json:"scenario"`
-	Processes                 int     `json:"processes"`
-	Wallets                   int     `json:"wallets"`
-	Requests                  int     `json:"requests"`
-	Concurrency               int     `json:"concurrency"`
-	DurationSeconds           float64 `json:"durationSeconds"`
-	RequestsPerSecond         float64 `json:"requestsPerSecond"`
-	P50Ms                     float64 `json:"p50Ms"`
-	P95Ms                     float64 `json:"p95Ms"`
-	P99Ms                     float64 `json:"p99Ms"`
-	Errors                    int     `json:"errors"`
-	ReconciliationMismatches  int     `json:"reconciliationMismatches"`
-	OutboxPending             int     `json:"outboxPendingAtEnd"`
-	OutboxOldestSeconds       float64 `json:"outboxOldestSecondsAtEnd"`
-	LockWaitSeconds           float64 `json:"walletLockSecondsTotal"`
-	DatabaseStartSeconds      float64 `json:"databaseTransactionStartSecondsTotal"`
-	Conflicts                 float64 `json:"concurrencyConflicts"`
-	TargetRequestsPerSecond   int     `json:"targetRequestsPerSecond"`
-	EventsProduced            int     `json:"eventsProduced"`
-	EventsPublishedDuringLoad int     `json:"eventsPublishedDuringLoad"`
-	EventProductionRate       float64 `json:"eventsProducedPerSecond"`
-	EventPublicationRate      float64 `json:"eventsPublishedPerSecondDuringLoad"`
-	DrainSeconds              float64 `json:"outboxDrainSeconds"`
-	EndToEndSeconds           float64 `json:"endToEndSeconds"`
-	EndToEndRequestsPerSecond float64 `json:"endToEndRequestsPerSecond"`
-	OutboxPendingAfterDrain   int     `json:"outboxPendingAfterDrain"`
-	EventsReceived            int     `json:"eventsReceived"`
-	ClaimAverageMs            float64 `json:"outboxClaimAverageMs"`
-	SendAverageMs             float64 `json:"outboxSendAverageMs"`
-	ConfirmAverageMs          float64 `json:"outboxConfirmAverageMs"`
-	PoolWaitSeconds           float64 `json:"poolEmptyAcquireWaitSecondsTotal"`
+	Scenario                              string  `json:"scenario"`
+	Processes                             int     `json:"processes"`
+	Wallets                               int     `json:"wallets"`
+	Requests                              int     `json:"requests"`
+	Concurrency                           int     `json:"concurrency"`
+	DurationSeconds                       float64 `json:"durationSeconds"`
+	RequestsPerSecond                     float64 `json:"requestsPerSecond"`
+	P50Ms                                 float64 `json:"p50Ms"`
+	P95Ms                                 float64 `json:"p95Ms"`
+	P99Ms                                 float64 `json:"p99Ms"`
+	Errors                                int     `json:"errors"`
+	ReconciliationMismatches              int     `json:"reconciliationMismatches"`
+	OutboxPending                         int     `json:"outboxPendingAtEnd"`
+	OutboxOldestSeconds                   float64 `json:"outboxOldestSecondsAtEnd"`
+	LockWaitSeconds                       float64 `json:"walletLockSecondsTotal"`
+	DatabaseStartSeconds                  float64 `json:"databaseTransactionStartSecondsTotal"`
+	Conflicts                             float64 `json:"concurrencyConflicts"`
+	TargetRequestsPerSecond               int     `json:"targetRequestsPerSecond"`
+	EventsProduced                        int     `json:"eventsProduced"`
+	EventsPublishedDuringLoad             int     `json:"eventsPublishedDuringLoad"`
+	EventProductionRate                   float64 `json:"eventsProducedPerSecond"`
+	EventPublicationRate                  float64 `json:"eventsPublishedPerSecondDuringLoad"`
+	DrainSeconds                          float64 `json:"outboxDrainSeconds"`
+	FinancialToPublishedSeconds           float64 `json:"financialToPublishedSeconds"`
+	FinancialToPublishedRequestsPerSecond float64 `json:"financialToPublishedRequestsPerSecond"`
+	OutboxPendingAfterDrain               int     `json:"outboxPendingAfterDrain"`
+	EventsReceived                        int     `json:"eventsReceived"`
+	ClaimAverageMs                        float64 `json:"outboxClaimAverageMs"`
+	SendAverageMs                         float64 `json:"outboxSendAverageMs"`
+	ConfirmAverageMs                      float64 `json:"outboxConfirmAverageMs"`
+	PoolWaitSeconds                       float64 `json:"poolEmptyAcquireWaitSecondsTotal"`
 }
 
 func loadSetting(t *testing.T, name string, fallback, max int) int {
@@ -202,8 +202,8 @@ func TestFinancialLoad(t *testing.T) {
 				return report.OutboxPendingAfterDrain == 0
 			})
 			report.DrainSeconds = time.Since(drainStarted).Seconds()
-			report.EndToEndSeconds = time.Since(at).Seconds()
-			report.EndToEndRequestsPerSecond = float64(count-report.Errors) / report.EndToEndSeconds
+			report.FinancialToPublishedSeconds = time.Since(at).Seconds()
+			report.FinancialToPublishedRequestsPerSecond = float64(count-report.Errors) / report.FinancialToPublishedSeconds
 			publication := loadPublisherMetrics(t, servers, internal)
 			average := func(name string) float64 {
 				n := publication[name+"_count"] - publisherBaseline[name+"_count"]
@@ -235,7 +235,7 @@ func TestFinancialLoad(t *testing.T) {
 				server.stop(t)
 			}
 			reports = append(reports, report)
-			t.Logf("HTTP %.2f req/s; produced %.2f events/s; published during load %.2f events/s; recovery %.2fs; end-to-end %.2f req/s; received %d events", report.RequestsPerSecond, report.EventProductionRate, report.EventPublicationRate, report.DrainSeconds, report.EndToEndRequestsPerSecond, report.EventsReceived)
+			t.Logf("HTTP %.2f req/s; produced %.2f events/s; published during load %.2f events/s; recovery %.2fs; through publication %.2f req/s; received %d events", report.RequestsPerSecond, report.EventProductionRate, report.EventPublicationRate, report.DrainSeconds, report.FinancialToPublishedRequestsPerSecond, report.EventsReceived)
 			if report.Errors != 0 || report.ReconciliationMismatches != 0 {
 				t.Errorf("load integrity: errors=%d mismatches=%d", report.Errors, report.ReconciliationMismatches)
 			}

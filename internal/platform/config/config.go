@@ -10,6 +10,15 @@ import (
 	"time"
 )
 
+// These deadlines also define the minimum production lease and visibility windows.
+const (
+	ClaimTimeout     = 5 * time.Second
+	PublishTimeout   = 5 * time.Second
+	ReferenceTimeout = 5 * time.Second
+	ConsumerTimeout  = 10 * time.Second
+	CleanupTimeout   = 2 * time.Second
+)
+
 type Config struct {
 	HTTPAddr               string
 	DatabaseURL            string
@@ -26,6 +35,7 @@ type Config struct {
 	WorkerRoles            string
 	WorkerConcurrency      int
 	WorkerInterval         time.Duration
+	DLQPollInterval        time.Duration
 	LeaseDuration          time.Duration
 	VisibilityTimeout      int32
 	ReferenceTTL           time.Duration
@@ -44,7 +54,8 @@ func Defaults() Config {
 		OIDCJWKSURL: "http://localhost:8081/realms/wagercore/protocol/openid-connect/certs", OIDCAudience: "wagercore-api",
 		SQSEndpoint: "http://localhost:4566", AWSRegion: "us-east-1", AWSAccessKeyID: "test", AWSSecretAccessKey: "test",
 		WorkerRoles: "all", WorkerConcurrency: 4, WorkerInterval: 200 * time.Millisecond,
-		LeaseDuration: 30 * time.Second, VisibilityTimeout: 30, ReferenceTTL: 10 * time.Minute,
+		DLQPollInterval: 30 * time.Second,
+		LeaseDuration:   30 * time.Second, VisibilityTimeout: 30, ReferenceTTL: 10 * time.Minute,
 		ReferenceMaxAttempts: 10, RetryBase: time.Second,
 	}
 }
@@ -100,6 +111,13 @@ func Load() (Config, error) {
 			*destination = duration
 		}
 	}
+	if value, exists := os.LookupEnv("DLQ_POLL_INTERVAL"); exists {
+		interval, err := time.ParseDuration(value)
+		if err != nil || interval < time.Second || interval > time.Hour {
+			return Config{}, errors.New("DLQ_POLL_INTERVAL must be between 1s and 1h")
+		}
+		cfg.DLQPollInterval = interval
+	}
 	for key, destination := range map[string]*int{"DATABASE_MAX_CONNECTIONS": &cfg.DatabaseMaxConnections, "WORKER_CONCURRENCY": &cfg.WorkerConcurrency, "REFERENCE_MAX_ATTEMPTS": &cfg.ReferenceMaxAttempts} {
 		if value, exists := os.LookupEnv(key); exists {
 			number, err := strconv.Atoi(value)
@@ -145,6 +163,21 @@ func Load() (Config, error) {
 	case "all", "none", "publisher", "consumer", "references":
 	default:
 		return Config{}, errors.New("invalid WORKER_ROLES")
+	}
+	if cfg.Environment == "production" {
+		workTimeout := time.Duration(0)
+		if cfg.WorkerRoles == "all" || cfg.WorkerRoles == "publisher" {
+			workTimeout = PublishTimeout
+		}
+		if cfg.WorkerRoles == "all" || cfg.WorkerRoles == "references" {
+			workTimeout = max(workTimeout, ReferenceTimeout)
+		}
+		if workTimeout > 0 && cfg.LeaseDuration <= ClaimTimeout+workTimeout+CleanupTimeout {
+			return Config{}, errors.New("LEASE_DURATION must exceed the claim, processing and cleanup deadlines in production")
+		}
+		if (cfg.WorkerRoles == "all" || cfg.WorkerRoles == "consumer") && time.Duration(cfg.VisibilityTimeout)*time.Second <= ConsumerTimeout+CleanupTimeout {
+			return Config{}, errors.New("SQS_VISIBILITY_TIMEOUT must exceed the processing and cleanup deadlines in production")
+		}
 	}
 	if cfg.Environment != "local" && cfg.Environment != "test" && cfg.Environment != "production" {
 		return Config{}, errors.New("APP_ENV must be local, test or production")
