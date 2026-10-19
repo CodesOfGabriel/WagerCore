@@ -1,6 +1,6 @@
 # Diagnóstico de falhas
 
-Comece pela resposta HTTP ou pelo identificador da mensagem. Em requisições autenticadas, a API gera `X-Correlation-Id`; esse valor identifica os logs da requisição e fica nos eventos produzidos. Cada recebimento SQS gera uma correlação própria. A identidade financeira e a inbox continuam sendo as referências entre reentregas.
+Organizei este diagnóstico a partir da resposta HTTP ou do identificador da mensagem para localizar a etapa que falhou sem depender de payloads nos logs. Em requisições autenticadas, a API gera `X-Correlation-Id`; esse valor identifica os logs da requisição e fica nos eventos produzidos. Cada recebimento SQS gera uma correlação própria. A identidade financeira e a inbox continuam sendo as referências entre reentregas.
 
 ## Estado dos serviços
 
@@ -36,7 +36,7 @@ Migrations precisam terminar com sucesso antes de a API iniciar. Divergência de
 | `receiveCount`, `attempt` | Recebimentos da mensagem ou tentativas da outbox |
 | `retryDelaySeconds`, `retryDelayMs` | Espera solicitada para a próxima tentativa, conforme o worker |
 
-Os logs não registram tokens, receipts SQS, connection strings, mensagens brutas de exceção nem payloads financeiros. Para erros sem tipo conhecido, use `stage`, `errorType`, os identificadores e o teste correspondente para localizar a origem no código.
+Escolhi registrar tipos, códigos e identificadores técnicos em vez de mensagens brutas de exceção, que podem incluir credenciais ou valores financeiros. Não registro tokens, receipts SQS, connection strings nem payloads financeiros. Para erros sem tipo conhecido, use `stage`, `errorType`, os identificadores e o teste correspondente para localizar a origem no código.
 
 ## HTTP
 

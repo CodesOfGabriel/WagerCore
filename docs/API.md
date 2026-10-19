@@ -1,6 +1,6 @@
 # API
 
-Os exemplos de inicialização e obtenção de tokens estão no [README](../README.md). Todas as respostas de negócio incluem `X-Correlation-Id`. Os corpos JSON aceitam até 64 KiB e rejeitam campos desconhecidos. Valores monetários usam `{"amount":"25.00","currency":"BRL"}`.
+Separei os contratos neste documento para manter corpos de requisição, respostas e permissões em um único lugar. Deixei os exemplos de inicialização e obtenção de tokens no [README](../README.md). Todas as respostas de negócio incluem `X-Correlation-Id`. Os corpos JSON aceitam até 64 KiB e rejeitam campos desconhecidos. Valores monetários usam `{"amount":"25.00","currency":"BRL"}`.
 
 ## Permissões
 

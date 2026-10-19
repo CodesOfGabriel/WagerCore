@@ -1,6 +1,6 @@
 # WagerCore
 
-Backend em Go para operações financeiras de jogos, com entrada por HTTP e SQS FIFO. Carteira, transação, ledger e eventos são confirmados em uma transação PostgreSQL. A deduplicação permanece válida entre processos e após reinícios.
+Construí o WagerCore em Go para processar operações financeiras de jogos por HTTP e SQS FIFO. Carteira, transação, ledger e eventos são confirmados em uma transação PostgreSQL. A deduplicação permanece válida entre processos e após reinícios.
 
 Implementa `BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK`, abertura interna, referências pendentes, inbox, outbox e reconciliação. A API usa tokens do Keycloak e separa o serviço interno dos provedores.
 
@@ -25,7 +25,7 @@ docker compose -f docker-compose.local.yml up -d --build --wait
 docker compose -f docker-compose.local.yml ps
 ```
 
-O Compose inicia PostgreSQL, Keycloak e LocalStack, importa o realm, cria três filas e aplica as migrations antes de iniciar a API. As credenciais presentes no repositório são exemplos para esse ambiente local.
+Criei `docker-compose.local.yml` para iniciar PostgreSQL, Keycloak e LocalStack, importar o realm, criar as três filas e aplicar as migrations antes da API. Mantive volumes no PostgreSQL e no Keycloak para preservar o ambiente de desenvolvimento entre execuções. As credenciais presentes no repositório são exemplos para esse ambiente local.
 
 | Serviço | Endereço |
 | --- | --- |
@@ -138,12 +138,12 @@ make build
 Integração completa:
 
 ```sh
-make test-deps-up
 make test-integration
-make test-deps-down
 ```
 
-A preparação inicia PostgreSQL em 55432, Keycloak em 58081 e LocalStack em 54566. Os testes usam esse ambiente separado e iniciam os próprios processos Go; não precisam da API local em execução. O último comando encerra as dependências e descarta o banco temporário de testes.
+Criei `scripts/test-integration.sh` para preparar PostgreSQL em 55432, Keycloak em 58081 e LocalStack em 54566 e executar os testes. Removo os containers automaticamente somente quando os testes passam. Em caso de falha ou interrupção, exibo os logs e mantenho os containers para investigação. Depois de investigar, executo `make test-deps-down`.
+
+Usei esse mesmo script nos alvos `make test-concurrency` e `make test-failover`. Os testes iniciam os próprios processos Go e não dependem da API local. O ambiente de desenvolvimento permanece separado.
 
 A [documentação dos testes](docs/TESTES.md) detalha os alvos, isolamento, execução de um cenário, falhas esperadas e diagnóstico. A [matriz de cenários](docs/CENARIOS.md) descreve as garantias verificadas. Para investigar falhas durante o uso da aplicação, consulte [DIAGNOSTICO.md](docs/DIAGNOSTICO.md).
 

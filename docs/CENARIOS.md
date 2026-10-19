@@ -1,6 +1,6 @@
 # Cenários de validação
 
-A suíte usa PostgreSQL, Keycloak e LocalStack reais. Os processos Go compartilham banco e filas, com portas HTTP próprias. Os comandos e o isolamento estão em [TESTES.md](TESTES.md); este documento relaciona cada cenário à garantia que ele verifica.
+Montei a suíte com PostgreSQL, Keycloak e LocalStack reais para verificar o estado confirmado no banco e o comportamento das filas. Os processos Go compartilham banco e filas, com portas HTTP próprias. Os comandos e o isolamento estão em [TESTES.md](TESTES.md); este documento relaciona cada cenário à garantia que ele verifica.
 
 Na execução local de 19/10/2026, `make check build`, `make test-integration` e `make test-failover` passaram. O Docker local iniciou saudável com schema na versão 4. Uma demonstração com abertura, BET e WIN por HTTP, nova BET por SQS e replays terminou com saldo `80.00`, quatro lançamentos reconciliados, inbox concluída e nenhuma pendência de publicação.
 
@@ -42,7 +42,7 @@ Esses cenários demonstram processos independentes no mesmo host e broker emulad
 
 ## Distribuição HTTP com Traefik
 
-Traefik permanece como extensão de infraestrutura. A integridade entre processos já é testada diretamente por HTTP e SQS, sem depender de afinidade de sessão.
+Mantive o Traefik como extensão de infraestrutura. Primeiro validei a integridade diretamente por HTTP e SQS entre processos, sem depender de afinidade de sessão.
 
 Uma futura composição com proxy deve encaminhar HTTP para três réplicas sem `container_name` fixo e usar `/health/ready` para retirar uma instância indisponível. O cliente pode repetir a operação em qualquer réplica. O proxy não deve repetir POST automaticamente. SQS continua entregando diretamente aos consumidores.
 
@@ -50,7 +50,7 @@ O acesso ao Docker deve passar por socket proxy restrito, com dashboard e infrae
 
 ## Desempenho
 
-Ainda não há resultado de benchmark. A medição deve começar depois da integridade, com ambiente, recursos, versões, duração e proporção das operações registrados.
+Ainda não executei um benchmark para publicar resultados de desempenho. A medição deve começar depois da integridade, com ambiente, recursos, versões, duração e proporção das operações registrados.
 
 | Carga equivalente | Objetivo |
 | --- | --- |

@@ -1,10 +1,10 @@
 # Arquitetura
 
-O domínio concentra as regras de dinheiro, carteira, transação, ledger e eventos. A aplicação coordena os casos de uso por portas; os adapters implementam PostgreSQL, HTTP, OIDC e SQS. Fx compõe as dependências e controla sua abertura e encerramento.
+Concentrei no domínio as regras de dinheiro, carteira, transação, ledger e eventos para mantê-las independentes do transporte e do banco. Usei a aplicação para coordenar os casos de uso e os adapters para implementar PostgreSQL, HTTP, OIDC e SQS. Mantive a composição e o ciclo de vida das dependências no Fx.
 
 ## Uma unidade de confirmação
 
-`Manager.Within` abre uma transação `READ COMMITTED` e entrega um repositório vinculado ao mesmo `pgx.Tx`. Nenhuma gravação do caso de uso confirma sozinha. Abertura positiva confirma carteira, `OPENING`, crédito no ledger e dois eventos. Uma entrada SQS também confirma a inbox nesse commit.
+Criei `Manager.Within` para abrir uma transação `READ COMMITTED` e entregar um repositório vinculado ao mesmo `pgx.Tx`. Nenhuma gravação do caso de uso confirma sozinha. Abertura positiva confirma carteira, `OPENING`, crédito no ledger e dois eventos. Uma entrada SQS também confirma a inbox nesse commit.
 
 Parsing, autorização e hash ocorrem antes da transação. O processamento procura a identidade financeira e, para operações novas, bloqueia a carteira com `FOR UPDATE` antes de reservar a transação. Essa ordem evita upgrades concorrentes dos locks adquiridos pelas chaves estrangeiras. `ON CONFLICT DO NOTHING` resolve a disputa de identidade; o perdedor consulta o registro confirmado e verifica o replay.
 
@@ -34,7 +34,7 @@ O banco protege saldo não negativo, identidades financeiras, abertura única, a
 
 ## Identidade e replay
 
-Existem duas identidades únicas, ambas no escopo do provedor: `(providerId, idempotencyKey)` e `(providerId, externalTransactionId)`. Chave, ID externo e hash precisam coincidir para um replay. Trocar a chave do mesmo ID externo também é conflito.
+Defini duas identidades únicas, ambas no escopo do provedor: `(providerId, idempotencyKey)` e `(providerId, externalTransactionId)`. Chave, ID externo e hash precisam coincidir para um replay. Trocar a chave do mesmo ID externo também é conflito.
 
 O hash é SHA-256 do JSON UTF-8 canônico produzido com mapas de chaves ordenadas. Inclui `providerId`, `externalTransactionId`, `playerId`, `walletId`, `roundId`, `gameId`, `kind`, `money.amount`, `money.currency` e a referência quando preenchida. A ordenação também se aplica ao objeto `money`.
 
@@ -56,7 +56,7 @@ Cada evento tem tipo concreto, ID estável, aggregate, correlação, causação 
 
 Movimentos geram `WagerTransactionProcessed` e `WalletBalanceChanged`. `LOSS` gera apenas o primeiro. Rejeições geram `WagerTransactionRejected`; a primeira pendência gera `WagerTransactionPendingReference`. `OPENING` omite metadados externos inaplicáveis.
 
-A outbox possui sequência persistida e índice das pendências por carteira. O publisher reserva apenas o primeiro evento ainda não publicado de cada carteira. Isso preserva a ordem também com vários publishers, mantendo carteiras diferentes em paralelo. Uma falha temporária pode atrasar eventos posteriores da mesma carteira.
+Adicionei à outbox uma sequência persistida e um índice das pendências por carteira para preservar a ordem de publicação entre instâncias. O publisher reserva apenas o primeiro evento ainda não publicado de cada carteira. Isso preserva a ordem também com vários publishers, mantendo carteiras diferentes em paralelo. Uma falha temporária pode atrasar eventos posteriores da mesma carteira.
 
 O envio ocorre após o commit. Só o proprietário de um lease válido confirma `published_at`. Se o processo cair após enviar, outro publisher reenviará o mesmo snapshot e `eventId`; o protocolo é de entrega ao menos uma vez. Consumidores devem deduplicar por `eventId`, mesmo que FIFO suprima repetições dentro de sua janela de deduplicação.
 

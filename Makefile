@@ -54,10 +54,10 @@ test-deps-up: test-db-up
 test-deps-down: test-db-down
 
 test-integration:
-	go test -race -tags=integration ./tests/integration/... -count=1 -timeout=5m
+	./scripts/test-integration.sh
 
 test-concurrency:
-	go test -race -tags=integration ./tests/integration/... -run 'Test(ThreeProcesses|SQSInbox)' -count=1 -timeout=3m
+	TEST_TIMEOUT=3m ./scripts/test-integration.sh -run 'Test(ThreeProcesses|SQSInbox)'
 
 test-failover:
-	go test -race -tags=integration ./tests/integration/... -run 'Test(Crash|ReferenceWorker|MessagingRetention|AtomicRollback)' -count=1 -timeout=3m
+	TEST_TIMEOUT=3m ./scripts/test-integration.sh -run 'Test(Crash|ReferenceWorker|MessagingRetention|AtomicRollback)'
