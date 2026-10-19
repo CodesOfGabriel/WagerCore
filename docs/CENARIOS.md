@@ -36,28 +36,25 @@ A contagem de envio da outbox é observada nos logs e nas tentativas do banco. A
 
 A restauração de referências é verificada pelo estado final e pelo único lançamento correspondente. A mensagem SQS só é removida depois do commit; pendências são continuadas pelo worker de referências.
 
+## Indisponibilidade e encerramento
+
+| Teste | Evidência exigida |
+| --- | --- |
+| `TestPostgresOutagePreservesIdempotency` | Banco pausado produz readiness indisponível e `503`; após o retorno, a operação é aplicada uma vez e os eventos são publicados |
+| `TestSQSOutageRetainsCommittedEvents` | Falta de resposta do broker mantém eventos no banco; o publisher retoma sem outro movimento financeiro |
+| `TestPermanentInfrastructureFailureIsAudited` | Erro SQL permanente gera `FAILED`, preserva saldo e ledger, mantém replay terminal e encaminha a mensagem à DLQ |
+| `TestPermanentFailureAtCommitIsAudited` | Falha em constraint adiada reverte carteira, ledger e outbox antes de registrar `FAILED` |
+| `TestPermanentReferenceFailureIsAudited` | Falha permanente na retomada encerra a referência em `FAILED`, sem crédito parcial |
+| `TestShutdownCompletesInFlightHTTPRequest` | SIGTERM aguarda a requisição em andamento, que confirma e pode ser repetida após reinício |
+| `TestShutdownReleasesInFlightSQSMessage` | SIGTERM cancela o processamento bloqueado e libera uma mensagem com visibilidade de trinta segundos para retomada imediata |
+| `TestShutdownRecoversUnconfirmedPublication` | O broker recebe o evento, a resposta é interrompida pelo shutdown e outro publisher confirma o mesmo evento |
+
+Usei pausas nos containers para interromper respostas reais do banco e do broker, preservando seus dados. Nos cenários de shutdown, também confiro nos logs a sequência de encerramento do HTTP, dos workers e do pool PostgreSQL.
+
 ## Limites das evidências
 
 Esses cenários demonstram processos independentes no mesmo host e broker emulado. Não simulam perda de disco, cluster PostgreSQL, indisponibilidade regional da AWS ou todos os modos de falha de rede. A CI prepara o mesmo ambiente e executa a suíte com race detector; seu resultado remoto depende da execução no GitHub.
 
-## Distribuição HTTP com Traefik
-
-Mantive o Traefik como extensão de infraestrutura. Primeiro validei a integridade diretamente por HTTP e SQS entre processos, sem depender de afinidade de sessão.
-
-Uma futura composição com proxy deve encaminhar HTTP para três réplicas sem `container_name` fixo e usar `/health/ready` para retirar uma instância indisponível. O cliente pode repetir a operação em qualquer réplica. O proxy não deve repetir POST automaticamente. SQS continua entregando diretamente aos consumidores.
-
-O acesso ao Docker deve passar por socket proxy restrito, com dashboard e infraestrutura em redes adequadas. A demonstração deve observar três processos, interromper um, conferir o atendimento pelos outros e validar os replays após sua recuperação.
-
 ## Desempenho
 
-Ainda não executei um benchmark para publicar resultados de desempenho. A medição deve começar depois da integridade, com ambiente, recursos, versões, duração e proporção das operações registrados.
-
-| Carga equivalente | Objetivo |
-| --- | --- |
-| Uma instância e 100 carteiras | Referência de processamento |
-| Três instâncias e 100 carteiras | Distribuição entre carteiras independentes |
-| Três instâncias e uma carteira | Custo da contenção necessária |
-
-Coletar throughput, erros, p50/p95/p99, tempo de aquisição de conexão e lock, conflitos, atraso da outbox e divergências. Verificar planos das consultas com `EXPLAIN (ANALYZE, BUFFERS)` antes de ajustar pools ou índices. O tamanho do pool é configurável e deve respeitar o orçamento total das instâncias e workers.
-
-As métricas implementadas fornecem latência, resultados, retries, conflitos e pendências. Os IDs ficam nos logs para evitar cardinalidade ilimitada. Números de desempenho só devem ser publicados a partir de execução registrada.
+Criei um teste de carga com a mesma quantidade de operações em uma instância com cem carteiras, três instâncias com cem carteiras e três instâncias disputando uma carteira. O comando, os parâmetros, as métricas e os resultados medidos estão em [BENCHMARK.md](BENCHMARK.md).

@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"junglegaming/internal/domain"
@@ -88,6 +89,7 @@ func (s *Service) Process(ctx context.Context, request WagerRequest, key string,
 		return WagerResult{}, err
 	}
 	var result WagerResult
+	var permanentCause error
 	err = s.uow.Within(ctx, func(store Store) error {
 		if message != nil {
 			if err := store.ReserveInbox(ctx, *message); err != nil {
@@ -138,6 +140,17 @@ func (s *Service) Process(ctx context.Context, request WagerRequest, key string,
 		}
 		return nil
 	})
+	if errors.Is(err, ErrPermanentInfrastructure) {
+		// O erro SQL confirmou o rollback; a auditoria usa outra transação, sem repetir o movimento.
+		permanentCause = err
+		result, err = s.failRequest(ctx, input, trace, message, "")
+		if err != nil && !errors.Is(err, ErrConflict) && !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrWalletMismatch) {
+			err = fmt.Errorf("%w: could not audit permanent failure: %w", ErrUnavailable, err)
+		}
+		if result.Status != domain.Failed {
+			permanentCause = nil
+		}
+	}
 	if err != nil {
 		if errors.Is(err, ErrConflict) {
 			s.observer.Conflict()
@@ -150,7 +163,83 @@ func (s *Service) Process(ctx context.Context, request WagerRequest, key string,
 		s.observer.Processed(string(request.Kind), string(result.Status), time.Since(started))
 	}
 	s.faults.Hit("after_financial_commit", request.ExternalTransactionID)
-	return result, nil
+	return result, permanentCause
+}
+
+func (s *Service) failRequest(ctx context.Context, input domain.TransactionInput, trace Trace, message *IncomingMessage, leaseID string) (WagerResult, error) {
+	var result WagerResult
+	err := s.uow.Within(ctx, func(store Store) error {
+		if message != nil {
+			if err := store.ReserveInbox(ctx, *message); err != nil {
+				return err
+			}
+		}
+		wallet, at, err := store.WalletForUpdate(ctx, input.WalletID)
+		if err != nil {
+			return err
+		}
+		if wallet.Snapshot().PlayerID != input.PlayerID || wallet.Snapshot().Balance.Currency() != input.Money.Currency() {
+			return ErrWalletMismatch
+		}
+		transaction, err := store.Identity(ctx, input.ProviderID, input.IdempotencyKey, input.ExternalTransactionID)
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			return err
+		}
+		if transaction != nil {
+			result, err = replay(transaction, input)
+			if err != nil {
+				return err
+			}
+			if result.Status == domain.PendingReference && leaseID != "" {
+				schedule, err := store.ReferenceSchedule(ctx, input.ID)
+				if err != nil {
+					return err
+				}
+				if schedule.LeaseID != leaseID || !at.Before(schedule.LeaseUntil) {
+					return ErrLeaseLost
+				}
+				if err := transaction.Fail(at); err != nil {
+					return err
+				}
+				if err := store.SaveTransaction(ctx, transaction, nil); err != nil {
+					return err
+				}
+				result = resultOf(transaction, false)
+			}
+		} else {
+			transaction, err = domain.NewWagerTransaction(input, at)
+			if err != nil {
+				return err
+			}
+			reserved, err := store.ReserveTransaction(ctx, transaction, trace)
+			if err != nil {
+				return err
+			}
+			if !reserved {
+				transaction, err = store.Identity(ctx, input.ProviderID, input.IdempotencyKey, input.ExternalTransactionID)
+				if err != nil {
+					return err
+				}
+				result, err = replay(transaction, input)
+				if err != nil {
+					return err
+				}
+			} else {
+				if err := transaction.Fail(at); err != nil {
+					return err
+				}
+				if err := store.SaveTransaction(ctx, transaction, nil); err != nil {
+					return err
+				}
+				result = resultOf(transaction, false)
+			}
+		}
+		if message != nil {
+			return store.CompleteInbox(ctx, *message, result.TransactionID)
+		}
+		return nil
+	})
+	return result, err
 }
 
 func replay(transaction *domain.WagerTransaction, input domain.TransactionInput) (WagerResult, error) {
@@ -353,11 +442,13 @@ func (s *Service) waitReference(ctx context.Context, store Store, transaction *d
 func (s *Service) Resume(ctx context.Context, transactionID, leaseID string) error {
 	started := time.Now()
 	var completed *domain.WagerTransaction
+	var input domain.TransactionInput
 	err := s.uow.Within(ctx, func(store Store) error {
 		transaction, err := store.Transaction(ctx, transactionID)
 		if err != nil {
 			return err
 		}
+		input = transaction.Snapshot().Input
 		if transaction.Snapshot().Status != domain.PendingReference {
 			return nil
 		}
@@ -393,6 +484,19 @@ func (s *Service) Resume(ctx context.Context, transactionID, leaseID string) err
 		}
 		return err
 	})
+	if errors.Is(err, ErrPermanentInfrastructure) && input.ID != "" {
+		completed = nil
+		result, auditErr := s.failRequest(ctx, input, Trace{}, nil, leaseID)
+		if auditErr != nil {
+			return fmt.Errorf("%w: could not audit permanent failure: %w", ErrUnavailable, auditErr)
+		}
+		if result.Status == domain.Failed && !result.IdempotentReplay {
+			s.observer.Processed(string(input.Kind), string(domain.Failed), time.Since(started))
+		}
+		if result.Status != domain.Failed {
+			err = nil
+		}
+	}
 	if err == nil && completed != nil {
 		s.observer.Processed(string(completed.Snapshot().Input.Kind), string(completed.Snapshot().Status), time.Since(started))
 	}

@@ -60,7 +60,7 @@ make test-failover
 | Alvo | Seleção |
 | --- | --- |
 | `test-concurrency` | `TestThreeProcessesConcurrentBets` e `TestSQSInboxAndCrossChannelIdempotency` |
-| `test-failover` | Testes com prefixos `Crash`, `ReferenceWorker`, `MessagingRetention` e `AtomicRollback` |
+| `test-failover` | Testes com prefixos `Crash`, `ReferenceWorker`, `MessagingRetention`, `AtomicRollback`, `PostgresOutage`, `SQSOutage`, `Permanent` e `Shutdown` |
 
 Esses alvos também usam race detector e `-count=1`, com limite de três minutos. São recortes da suíte completa, não verificações adicionais obrigatórias após `make test-integration`.
 
@@ -92,6 +92,10 @@ Os cenários de recuperação usam prazos menores que os padrões da aplicação
 
 O cenário de falha na confirmação SQS usa um proxy que rejeita apenas `DeleteMessage`. PostgreSQL, Keycloak e as demais chamadas ao LocalStack continuam reais. O teste exige log na etapa `acknowledge`, financeiro já confirmado e replay após liberar a confirmação.
 
+Adicionei pausas controladas nos containers PostgreSQL e LocalStack para verificar indisponibilidade real sem perder os dados temporários do banco. Os testes sempre tentam desfazer a pausa antes de encerrar. Esses cenários exigem acesso ao mesmo Docker usado na preparação e não devem rodar em paralelo com outra suíte.
+
+Nos testes de shutdown, bloqueio uma operação no banco ou a resposta de publicação no broker antes de enviar SIGTERM. Confiro conclusão da requisição HTTP, rollback da mensagem interrompida, liberação de visibilidade e retomada da publicação com o mesmo evento.
+
 No SQS, os testes usam IDs de deduplicação de transporte distintos em alguns reenvios. Assim, a correção precisa vir da inbox e da identidade financeira, sem depender apenas da janela de deduplicação FIFO. Mensagens inválidas precisam chegar à DLQ após a política de recebimentos.
 
 Uma falha encerra o comando com código diferente de zero. Quando os helpers HTTP ou a inicialização falham, a saída inclui os logs capturados dos processos. O script acrescenta os logs das dependências e mantém seus containers ativos. Consulto a saída do teste para os logs dos processos Go e uso os comandos abaixo para continuar a investigação dos serviços:
@@ -115,6 +119,10 @@ make test-deps-down
 `test-db-up` e `test-db-down` executam a mesma preparação e encerramento dos três serviços. Essa inspeção manual exige o encerramento explícito. Se o script for encerrado com SIGKILL ou o Docker não responder durante a limpeza, executo `make test-deps-down` quando o daemon estiver disponível.
 
 `connection refused` indica endereço inacessível ou serviço ainda não iniciado. Falha em client credentials exige conferir importação do realm, client e secret. Um timeout de cenário exige examinar o estado do processo e as etapas de retry; não aumente o prazo antes de identificar o bloqueio. O [guia de diagnóstico](DIAGNOSTICO.md) descreve os campos dos logs.
+
+## Teste de carga
+
+Mantive `TestFinancialLoad` desabilitado na integração normal. Para executá-lo, uso `make benchmark`, que habilita apenas esse cenário e mantém a mesma regra de preparação e encerramento dos containers. A metodologia e os resultados estão em [BENCHMARK.md](BENCHMARK.md).
 
 ## Integração contínua
 

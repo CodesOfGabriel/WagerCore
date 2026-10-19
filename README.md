@@ -9,6 +9,7 @@ Implementa `BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK`, abertura interna, referê
 - [Execução e organização dos testes](docs/TESTES.md)
 - [Diagnóstico de falhas](docs/DIAGNOSTICO.md)
 - [Cenários e evidências de validação](docs/CENARIOS.md)
+- [Teste de carga e resultados](docs/BENCHMARK.md)
 
 ## Ambiente local
 
@@ -144,6 +145,8 @@ make test-integration
 Criei `scripts/test-integration.sh` para preparar PostgreSQL em 55432, Keycloak em 58081 e LocalStack em 54566 e executar os testes. Removo os containers automaticamente somente quando os testes passam. Em caso de falha ou interrupção, exibo os logs e mantenho os containers para investigação. Depois de investigar, executo `make test-deps-down`.
 
 Usei esse mesmo script nos alvos `make test-concurrency` e `make test-failover`. Os testes iniciam os próprios processos Go e não dependem da API local. O ambiente de desenvolvimento permanece separado.
+
+`make test-failover` seleciona interrupções, indisponibilidade das dependências, falhas permanentes e shutdown em andamento. `make benchmark` executa a comparação de carga entre uma e três instâncias e grava o relatório em `.local/benchmark.json`.
 
 A [documentação dos testes](docs/TESTES.md) detalha os alvos, isolamento, execução de um cenário, falhas esperadas e diagnóstico. A [matriz de cenários](docs/CENARIOS.md) descreve as garantias verificadas. Para investigar falhas durante o uso da aplicação, consulte [DIAGNOSTICO.md](docs/DIAGNOSTICO.md).
 

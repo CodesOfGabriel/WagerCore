@@ -24,7 +24,7 @@ Migrations precisam terminar com sucesso antes de a API iniciar. Divergência de
 | Campo | Uso |
 | --- | --- |
 | `stage` | Etapa que falhou |
-| `errorCategory` | `invalid_input`, `conflict`, `database`, `broker`, `network`, `timeout`, `canceled`, `unavailable`, `lease_lost`, `not_found` ou `internal` |
+| `errorCategory` | `invalid_input`, `conflict`, `permanent_infrastructure`, `database`, `broker`, `network`, `timeout`, `canceled`, `unavailable`, `lease_lost`, `not_found` ou `internal` |
 | `errorType` | Tipo Go da causa disponível, sem sua mensagem bruta |
 | `correlationId` | Liga requisição ou recebimento aos eventos |
 | `messageId` | Identidade do envelope de entrada SQS; na publicação, causação do evento quando houver |
@@ -42,6 +42,8 @@ Escolhi registrar tipos, códigos e identificadores técnicos em vez de mensagen
 
 `request_failed` identifica falhas não classificadas, com método, rota cadastrada, etapa e contexto disponível. `request_unavailable` identifica o caminho de indisponibilidade; `request_conflict` registra conflitos de identidade. A rota é o padrão do handler, sem os parâmetros de consulta recebidos.
 
+`wager_failed` registra a primeira falha permanente auditada, com código SQL e identidade financeira. O HTTP devolve o resultado `FAILED`; um replay usa o mesmo resultado, sem nova tentativa financeira.
+
 As etapas indicam a operação: `open_wallet`, `read_wallet`, `process_wager`, `read_transaction`, `read_ledger` ou `reconcile_wallet`. Falhas técnicas não expõem detalhes na resposta ao cliente.
 
 ## Consumidor SQS
@@ -56,7 +58,7 @@ As etapas indicam a operação: `open_wallet`, `read_wallet`, `process_wager`, `
 
 `sqs_processed` confirma que o caso de uso retornou após o commit e inclui transação, status e indicação de replay. `sqs_completed` também confirma a remoção bem-sucedida da mensagem. Uma pendência durável pode ter ambos os eventos: sua continuação fica sob responsabilidade do worker de referências.
 
-A ausência de `sqs_completed` após `sqs_processed` exige conferir a confirmação no broker, antes de concluir que a movimentação falhou. Rejeições de negócio não são falhas técnicas de retry. Mensagens inválidas ou conflitantes permanecem sujeitas à DLQ.
+A ausência de `sqs_completed` após `sqs_processed` exige conferir a confirmação no broker, antes de concluir que a movimentação falhou. Rejeições de negócio não são falhas técnicas de retry. Um `sqs_processed` com status `FAILED` significa auditoria confirmada, e não sucesso financeiro ou confirmação no broker. Mensagens inválidas, conflitantes ou com resultado `FAILED` permanecem sujeitas à DLQ.
 
 ## Outbox e referências
 
@@ -64,7 +66,7 @@ A ausência de `sqs_completed` após `sqs_processed` exige conferir a confirmaç
 
 `outbox_retry_schedule_failed` e `reference_retry_schedule_failed` indicam falha ao persistir a próxima tentativa; o lease continua sendo o mecanismo de retomada. Uma reserva perdida na outbox é registrada em DEBUG como `outbox_lease_lost`, pois outro worker pode já ter assumido o evento.
 
-`reference_retry`, na etapa `resume_reference`, informa falhas técnicas na retomada de uma transação pendente. A resolução ou rejeição da referência deve ser conferida na consulta da transação. Falhas nas consultas de métricas geram `outbox_stats_failed` ou `dlq_stats_failed`; o último valor da métrica pode estar desatualizado.
+`reference_retry`, na etapa `resume_reference`, informa falhas técnicas na retomada de uma transação pendente. `reference_failed` indica que uma falha permanente foi auditada e encerrou a referência em `FAILED`. A resolução ou rejeição da referência deve ser conferida na consulta da transação. Falhas nas consultas de métricas geram `outbox_stats_failed` ou `dlq_stats_failed`; o último valor da métrica pode estar desatualizado.
 
 ## Consultar os registros da operação
 

@@ -9,13 +9,14 @@ import (
 )
 
 var (
-	ErrInvalidInput   = errors.New("invalid input")
-	ErrNotFound       = errors.New("resource not found")
-	ErrConflict       = errors.New("identity or payload conflict")
-	ErrUnavailable    = errors.New("dependency temporarily unavailable")
-	ErrWalletMismatch = errors.New("wallet player or currency does not match")
-	ErrLeaseLost      = errors.New("work reservation is no longer owned")
-	ErrInvalidCursor  = errors.New("invalid ledger cursor")
+	ErrInvalidInput            = errors.New("invalid input")
+	ErrNotFound                = errors.New("resource not found")
+	ErrConflict                = errors.New("identity or payload conflict")
+	ErrUnavailable             = errors.New("dependency temporarily unavailable")
+	ErrPermanentInfrastructure = errors.New("permanent infrastructure failure")
+	ErrWalletMismatch          = errors.New("wallet player or currency does not match")
+	ErrLeaseLost               = errors.New("work reservation is no longer owned")
+	ErrInvalidCursor           = errors.New("invalid ledger cursor")
 )
 
 type Trace struct{ CorrelationID, CausationID string }

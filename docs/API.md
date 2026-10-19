@@ -103,6 +103,8 @@ Reenviar a mesma identidade e conteúdo retorna `idempotentReplay: true`, com o 
 | `BALANCE_OVERFLOW` | Crédito ultrapassaria o limite de centavos |
 | `WALLET_VERSION_EXHAUSTED` | Movimento ultrapassaria o limite da versão |
 
+Uma falha permanente de persistência que pôde ser auditada retorna `500` com `status: "FAILED"`, `failureCode: "INFRASTRUCTURE_FAILURE"`, ID da transação e indicação de replay. Não há campo `balance`, pois a operação não concluiu um movimento. A repetição mantém esse resultado terminal. Falhas transitórias continuam usando `503`, sem transformar a operação em `FAILED`.
+
 ## Consultas e paginação
 
 - `GET /wagering/transactions/{transactionId}`
@@ -143,6 +145,7 @@ A resposta usa `200` mesmo quando `consistent` for `false`, pois a consulta foi 
 | `422` | Resultado `REJECTED` | Rejeição financeira persistida |
 | `202` | Resultado `PENDING_REFERENCE` | Continuação durável aguardando referência |
 | `503` | `TEMPORARILY_UNAVAILABLE` | Dependência indisponível ou prazo excedido; `Retry-After: 1` |
+| `500` | Resultado `FAILED` | Falha permanente de infraestrutura auditada |
 | `500` | `INTERNAL_ERROR` | Falha não classificada |
 
 Erros que não são resultados financeiros usam `{"code":"CODIGO"}`. Entrada inválida também traz uma mensagem curta. Detalhes de banco e credenciais não são devolvidos.

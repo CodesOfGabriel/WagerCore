@@ -17,6 +17,7 @@ import (
 	"junglegaming/internal/adapters/postgres"
 	sqsbroker "junglegaming/internal/adapters/sqs"
 	"junglegaming/internal/application"
+	"junglegaming/internal/domain"
 	"junglegaming/internal/identifier"
 	"junglegaming/internal/platform/config"
 	"junglegaming/internal/platform/telemetry"
@@ -184,6 +185,10 @@ func (r *Runtime) references(ctx context.Context) {
 				work, cancel := context.WithTimeout(ctx, 5*time.Second)
 				defer cancel()
 				if err := r.service.Resume(work, item.ID, item.LeaseID); err != nil && !errors.Is(err, application.ErrLeaseLost) {
+					if errors.Is(err, application.ErrPermanentInfrastructure) && !errors.Is(err, application.ErrUnavailable) {
+						r.logger.Error("reference_failed", append([]any{"transactionId", item.ID, "stage", "resume_reference"}, telemetry.ErrorFields(err)...)...)
+						return
+					}
 					r.metrics.Retry("references")
 					r.logger.Warn("reference_retry", append([]any{"transactionId", item.ID, "stage", "resume_reference"}, telemetry.ErrorFields(err)...)...)
 					cleanup, stop := context.WithTimeout(context.Background(), 2*time.Second)
@@ -242,9 +247,12 @@ func (r *Runtime) consume(root context.Context, message types.Message) {
 			r.logger.Info("sqs_received", attrs...)
 			stage = "process"
 			result, err = r.service.Process(ctx, request.Data.WagerRequest, request.Data.IdempotencyKey, application.Trace{CorrelationID: correlation, CausationID: request.MessageID}, &application.IncomingMessage{Consumer: "wager-transactions", ID: request.MessageID, Hash: hash})
-			if err == nil {
+			if err == nil || result.Status == domain.Failed {
 				attrs = append(attrs, "transactionId", result.TransactionID, "status", result.Status, "idempotentReplay", result.IdempotentReplay)
 				r.logger.Info("sqs_processed", attrs...)
+				if result.Status == domain.Failed && err == nil {
+					err = application.ErrPermanentInfrastructure
+				}
 			}
 		}
 	}

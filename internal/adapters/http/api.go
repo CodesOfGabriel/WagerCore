@@ -170,6 +170,12 @@ func (a *API) process(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := a.service.Process(r.Context(), request, keys[0], trace(r), nil)
 	if err != nil {
+		if result.Status == domain.Failed {
+			attrs := []any{"stage", "process_wager", "correlationId", trace(r).CorrelationID, "transactionId", result.TransactionID, "walletId", request.WalletID, "providerId", request.ProviderID, "externalTransactionId", request.ExternalTransactionID}
+			a.logger.Error("wager_failed", append(attrs, telemetry.ErrorFields(err)...)...)
+			writeJSON(w, 500, result)
+			return
+		}
 		a.failure(w, r, err, "process_wager", "walletId", request.WalletID, "externalTransactionId", request.ExternalTransactionID)
 		return
 	}
@@ -177,6 +183,9 @@ func (a *API) process(w http.ResponseWriter, r *http.Request) {
 	status := 200
 	if result.Status == domain.Rejected {
 		status = 422
+	}
+	if result.Status == domain.Failed {
+		status = 500
 	}
 	if result.Status == domain.Pending || result.Status == domain.PendingReference {
 		status = 202

@@ -42,6 +42,18 @@ O valor monetário é serializado com duas casas; uma referência vazia equivale
 
 O resultado guarda o saldo observado no processamento. Um replay terminal retorna esse saldo, mesmo após outros movimentos. Uma pendência retorna seu estado persistido atual; sua conclusão posterior passa a ser o resultado consultável.
 
+## Falhas transitórias e permanentes
+
+Separei indisponibilidade de falha permanente para que um timeout não encerre uma operação que ainda pode ser processada. Perda de conexão, cancelamento, deadlock e falha de serialização continuam recuperáveis: o HTTP retorna `503` quando não há resultado confirmado, e o consumidor mantém a mensagem para reentrega.
+
+Classifiquei como permanentes os erros SQL `23514`, `23503`, `22003`, `22P02`, `42P01`, `42703` e `42883`. Eles indicam restrição violada, valor incompatível ou estrutura de persistência ausente. Esses códigos são retornados pelo servidor e confirmam que a transação não teve sucesso; falhas de rede durante o commit não entram nessa classificação.
+
+Quando uma operação externa válida encontra um desses erros, primeiro concluo o rollback. Depois, abro outra transação, bloqueio a carteira e confiro novamente a identidade financeira. Se outra instância já tiver confirmado um resultado, devolvo esse resultado. Caso contrário, registro `FAILED` com `INFRASTRUCTURE_FAILURE`, sem saldo de resultado, movimento, ledger ou evento financeiro. Na entrada SQS, a inbox fica vinculada a essa auditoria no mesmo commit. Se o banco não permitir salvar a auditoria, devolvo indisponibilidade e preservo a possibilidade de nova tentativa.
+
+`FAILED` é terminal, inclusive depois de corrigir a infraestrutura: replay não tenta movimentar a carteira. No HTTP, retorno `500` com o resultado persistido. No SQS, mantenho as reentregas até a DLQ para investigação; uma inbox concluída com falha permanente não autoriza remover essa mensagem. Uma referência pendente pode seguir a mesma política, desde que o worker ainda possua um lease válido.
+
+O log da primeira falha registra o código SQL e os identificadores; a transação guarda o código de falha estável. Os eventos financeiros definidos neste projeto descrevem processamento, rejeição de negócio, pendência e mudança de saldo. Não publico um desses eventos como se uma falha de infraestrutura fosse uma rejeição de negócio.
+
 ## Referências fora de ordem
 
 Uma referência ausente ou ainda pendente leva a `PENDING_REFERENCE`, sem movimento. O commit registra prazo final, próxima tentativa, número de tentativas e evento de pendência. A inbox pode ser concluída porque essa continuação já é durável no banco.
@@ -72,7 +84,7 @@ Na entrada, produtores usam `MessageGroupId=walletId` e um ID de deduplicação 
 
 O consumidor faz long polling de vinte segundos, recebe conforme sua capacidade e remove a mensagem somente após o commit. A inbox usa `(consumerName, messageId)` e SHA-256 do envelope canônico, incluindo instante UTC, chave e campos de negócio. A mesma identidade com outro envelope é conflito; mudar apenas o ID da mensagem ainda passa pela idempotência financeira.
 
-Rejeições de negócio e pendências duráveis são tratamentos concluídos e permitem remover a mensagem. JSON inválido, `OPENING` externo, conflito de identidade e falhas técnicas mantêm a mensagem para retry. O consumidor ajusta visibilidade com backoff e jitter; o broker encaminha à DLQ após cinco recebimentos. A inspeção e correção da DLQ são operacionais; não há reenvio automático de mensagens inválidas.
+Rejeições de negócio e pendências duráveis são tratamentos concluídos e permitem remover a mensagem. Uma auditoria em `FAILED` permanece sujeita à DLQ. JSON inválido, `OPENING` externo, conflito de identidade e falhas técnicas mantêm a mensagem para retry. O consumidor ajusta visibilidade com backoff e jitter; o broker encaminha à DLQ após cinco recebimentos. A inspeção e correção da DLQ são operacionais; não há reenvio automático de mensagens inválidas.
 
 O canal SQS é de confiança da infraestrutura: a fila precisa ser privada, com escrita restrita aos produtores autorizados por IAM. O ambiente local usa uma policy da conta do emulador. JWT protege o HTTP; não existe token fictício embutido na mensagem.
 
@@ -82,7 +94,7 @@ Cada processo usa até dez conexões por padrão. Os três workers têm concorr�
 
 O padrão do lease e da visibilidade é trinta segundos. O publisher tem prazo de cinco segundos por item; o consumidor tem dez. Falhas de publicação usam backoff com intervalo base limitado a trinta segundos e jitter de até 25%, sem descartar eventos confirmados no banco. Mensagens SQS ficam sujeitas à política de DLQ.
 
-O encerramento para de aceitar HTTP, aguarda requisições no prazo, cancela polling e jobs e fecha as conexões. Trabalho interrompido é recuperado por rollback, expiração de lease ou visibilidade. Readiness verifica banco e filas; a inicialização também exige JWKS disponível. A verificação criptográfica usa RS256, emissor, audience, expiração, `nbf`, subject e permissões do cliente.
+O encerramento para de aceitar HTTP, aguarda requisições no prazo, cancela polling e jobs e fecha as conexões. Validei essa ordem com SIGTERM durante requisição bloqueada, mensagem em processamento e envio ao broker sem confirmação local. Trabalho interrompido é recuperado por rollback, expiração de lease ou visibilidade. Readiness verifica banco e filas; a inicialização também exige JWKS disponível. A verificação criptográfica usa RS256, emissor, audience, expiração, `nbf`, subject e permissões do cliente.
 
 ## Observabilidade e reconciliação
 

@@ -42,14 +42,26 @@ func (h *Health) ready(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	body := map[string]string{"status": "ready"}
 	status := http.StatusOK
-	for _, check := range append([]Check{{Name: "postgres", Run: h.checkPostgres}}, h.checks...) {
-		body[check.Name] = "up"
-		if err := check.Run(ctx); err != nil {
+	checks := append([]Check{{Name: "postgres", Run: h.checkPostgres}}, h.checks...)
+	type outcome struct {
+		name string
+		err  error
+	}
+	results := make(chan outcome, len(checks))
+	for _, check := range checks {
+		body[check.Name] = "unavailable"
+		go func(check Check) { results <- outcome{check.Name, check.Run(ctx)} }(check)
+	}
+	for range checks {
+		result := <-results
+		if result.err == nil {
+			body[result.name] = "up"
+		} else {
 			status = http.StatusServiceUnavailable
 			body["status"] = "not_ready"
-			body[check.Name] = "unavailable"
 		}
 	}
+
 	writeJSON(w, status, body)
 }
 

@@ -41,6 +41,7 @@ func RegisterServer(lifecycle fx.Lifecycle, cfg config.Config, handler http.Hand
 			return nil
 		},
 		OnStop: func(ctx context.Context) error {
+			logger.Info("http_stopping")
 			err := server.Shutdown(ctx)
 			if err != nil {
 				_ = server.Close()

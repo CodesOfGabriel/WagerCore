@@ -31,6 +31,8 @@ func ErrorFields(err error) []any {
 		category = "conflict"
 	case errors.Is(err, application.ErrLeaseLost):
 		category = "lease_lost"
+	case errors.Is(err, application.ErrPermanentInfrastructure):
+		category = "permanent_infrastructure"
 	case errors.Is(err, application.ErrNotFound):
 		category = "not_found"
 	case invalidInput(err), errors.As(err, &syntax):
