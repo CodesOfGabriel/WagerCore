@@ -1,0 +1,56 @@
+package config_test
+
+import (
+	"os"
+	"testing"
+	"time"
+
+	"junglegaming/internal/platform/config"
+)
+
+func TestLoadDefaults(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://jungle:jungle@localhost:5432/jungle")
+	for _, key := range []string{"HTTP_ADDR", "HEALTH_TIMEOUT"} {
+		t.Setenv(key, "")
+		if err := os.Unsetenv(key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.HTTPAddr != ":8080" || cfg.HealthTimeout != 2*time.Second || cfg.DatabaseURL == "" {
+		t.Fatalf("unexpected config: %+v", cfg)
+	}
+}
+
+func TestLoadEnvironment(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://localhost/test")
+	t.Setenv("HTTP_ADDR", "127.0.0.1:9090")
+	t.Setenv("HEALTH_TIMEOUT", "500ms")
+	cfg, err := config.Load()
+	if err != nil || cfg.HTTPAddr != "127.0.0.1:9090" || cfg.HealthTimeout != 500*time.Millisecond || cfg.DatabaseURL != "postgres://localhost/test" {
+		t.Fatalf("config=%+v error=%v", cfg, err)
+	}
+}
+
+func TestLoadRejectsInvalidEnvironment(t *testing.T) {
+	for _, tt := range []struct{ key, value string }{
+		{"DATABASE_URL", ""}, {"DATABASE_URL", "  "},
+		{"HTTP_ADDR", ""}, {"HTTP_ADDR", "localhost"}, {"HTTP_ADDR", ":0"},
+		{"HTTP_ADDR", ":65536"}, {"HTTP_ADDR", ":http"},
+		{"HEALTH_TIMEOUT", ""}, {"HEALTH_TIMEOUT", "1"}, {"HEALTH_TIMEOUT", "0s"},
+		{"HEALTH_TIMEOUT", "-1s"}, {"HEALTH_TIMEOUT", "6s"},
+	} {
+		t.Run(tt.key+"="+tt.value, func(t *testing.T) {
+			t.Setenv("DATABASE_URL", "postgres://localhost/test")
+			t.Setenv("HTTP_ADDR", ":8080")
+			t.Setenv("HEALTH_TIMEOUT", "2s")
+			t.Setenv(tt.key, tt.value)
+			if _, err := config.Load(); err == nil {
+				t.Fatal("invalid configuration accepted")
+			}
+		})
+	}
+}

@@ -1,0 +1,10 @@
+DROP TABLE wallet_ledger;
+DROP TABLE wager_transactions;
+DROP TABLE wallets;
+DROP FUNCTION check_ledger_transaction();
+DROP FUNCTION check_transaction_consistency();
+DROP FUNCTION check_wallet_consistency();
+DROP FUNCTION check_ledger_sequence();
+DROP FUNCTION protect_wager_transaction();
+DROP FUNCTION protect_wallet();
+DROP FUNCTION protect_ledger();
