@@ -1,6 +1,34 @@
-# Verificação da segunda auditoria
+# Verificação das auditorias
 
-Base conferida: `e5c023d39c1a5819b9152d218e599a615b893858`, em 19/10/2026. O [workflow 39293060572](https://github.com/CodesOfGabriel/WagerCore/actions/runs/39293060572) foi consultado: `unit` e `integration` concluíram com sucesso e o SHA corresponde à base local. As alterações desta revisão ainda dependem do commit e de nova CI.
+## Auditoria executada em outra máquina
+
+Conferência local em 19/10/2026, sobre `692c5e98cb0190542a2abd48c446e408c3c6e285`. O relatório externo foi comparado ao código e reproduzido nos pontos que exigiam alteração.
+
+| Ponto | Evidência e decisão |
+| --- | --- |
+| Dependências vulneráveis | `govulncheck` v1.9.0 reproduziu quatro vulnerabilidades alcançáveis em três módulos. Atualizados `go-jose/v4` para v4.1.4, `pgx/v5` para v5.9.2 e `x/text` para v0.41.0; `go mod tidy` ajustou apenas suas dependências transitivas. `make vuln` passou e foi incluído na CI, com a versão do scanner fixada no Makefile. |
+| Lease e visibilidade | Os limites de produção já estavam corrigidos na base local, com deadlines compartilhados e testes por papel ativo. Mantidas as janelas curtas de `local`/`test`. A exigência adicional `REFERENCE_TTL > LEASE_DURATION` foi descartada: TTL e posse da tentativa são conferidos separadamente em `Resume`; o lease não prolonga o prazo de negócio. |
+| Variáveis no Compose | Confirmada a omissão. Onze opções operacionais agora são interpoladas: pool, saúde, papéis, concorrência, intervalo de worker, intervalo da DLQ, lease, visibilidade, TTL, tentativas e backoff. Conferidos valores padrão e personalizados na configuração gerada. Ambiente local, endpoints internos, portas e credenciais dos emuladores continuam definidos na composição e foram documentados. |
+| Snapshot inválido na outbox | Antes da correção, o PostgreSQL aceitou os doze casos negativos do novo teste: carteira divergente/ausente e campos com tipos incompatíveis com o publisher. A migration `000005` adiciona validação do envelope usado na publicação, incluindo igualdade de `data.walletId` com `wallet_id`. Ela valida o histórico existente e recusa atomicamente dados incompatíveis; não altera migrations aplicadas nem reescreve snapshots. Os construtores de domínio já produzem dados tipados; não foi reproduzida uma entrada inválida pela API. |
+| Quarentena e alertas | O diagnóstico descreve o tratamento operacional e o uso de retries, idade e backlog. Não foi criado avanço automático sobre um evento inválido: isso exigiria uma política de reparo auditado e mudaria a garantia de ordem/entrega. A proteção adicionada atua antes de confirmar novos registros. |
+
+As versões corrigidas foram conferidas nos avisos oficiais: [GO-2026-4945](https://pkg.go.dev/vuln/GO-2026-4945), [GO-2026-5004](https://pkg.go.dev/vuln/GO-2026-5004), [GO-2026-5970](https://pkg.go.dev/vuln/GO-2026-5970) e [GO-2026-6629](https://pkg.go.dev/vuln/GO-2026-6629). O scanner mede alcance estático; um caminho apontado não comprova exploração por uma entrada externa. O aviso do pgx depende de protocolo simples com SQL e parâmetros específicos, combinação que não foi reproduzida na aplicação.
+
+| Verificação desta rodada | Resultado |
+| --- | --- |
+| `make vuln` | Aprovado: zero vulnerabilidades alcançáveis e zero nos pacotes importados; duas nos módulos requeridos sem chamadas identificadas pelo scanner |
+| `make check build` e `go mod verify` | Aprovados: testes, race detector, vet, binários e integridade dos módulos |
+| Compose | Padrões e onze valores personalizados conferidos; endpoints internos e `APP_ENV=local` preservados |
+| Proteção da outbox | Doze entradas inválidas rejeitadas e migração de histórico válido/inválido aprovados em 5,609s com race detector |
+| Integração completa — rodada final | Aprovada em 204,746s com race detector: financeiro, concorrência, carga sustentada, mensageria, interrupções, indisponibilidade, shutdown e migrations |
+
+A primeira execução completa encontrou `42P08` nos dois subcenários do novo teste de histórico: seu SQL de preparação usava o mesmo parâmetro como UUID e texto sem uma conversão consistente. A preparação foi corrigida com casts explícitos; os dois testes novos passaram isoladamente e a suíte completa passou na repetição. Os demais cenários da primeira rodada passaram. Os critérios de aplicação e os prazos dos testes foram preservados. Os containers e a rede de teste foram removidos após o sucesso; o ambiente local existente foi preservado.
+
+Evidências locais ignoradas: `.local/audit3-vuln-before.log`, `.local/audit3-vuln-after.log`, `.local/audit3-check.log`, `.local/audit3-build-final.log`, `.local/audit3-compose.json`, `.local/audit3-outbox-before.log`, `.local/audit3-outbox-after.log`, `.local/audit3-integration.log` e `.local/audit3-integration-final.log`. Nenhum commit foi criado nesta rodada.
+
+## Segunda auditoria
+
+Base conferida: `e5c023d39c1a5819b9152d218e599a615b893858`, em 19/10/2026. O [workflow 39293060572](https://github.com/CodesOfGabriel/WagerCore/actions/runs/39293060572) foi consultado: `unit` e `integration` concluíram com sucesso e o SHA corresponde a essa base. As alterações da segunda revisão foram consolidadas no commit `692c5e9`; as evidências abaixo registram sua validação local.
 
 | Ponto | Verificação e decisão |
 | --- | --- |

@@ -14,6 +14,7 @@ make build
 | `make test` | `go test ./...` | Domínio, configuração, JWT, HTTP, composição Fx e diagnóstico dos workers |
 | `make race` | `go test -race ./...` | Mesma suíte com detecção de acessos concorrentes à memória |
 | `make vet` | `go vet ./...` | Análise estática |
+| `make vuln` | `govulncheck ./...` (v1.9.0) | Vulnerabilidades alcançáveis; consulta a base pública Go e exige rede |
 | `make check` | Os três alvos anteriores | Verificação conjunta |
 | `make build` | Build de `cmd/server` e `cmd/migrate` | Binários em `bin/` |
 
@@ -128,6 +129,6 @@ make test-deps-down
 
 ## Integração contínua
 
-`.github/workflows/test.yml` tem dois jobs: `unit` verifica formatação, dependências, testes, race detector, análise estática e build; `integration` executa `make test-integration`, com logs e limpeza controlados pelo mesmo script local.
+`.github/workflows/test.yml` tem dois jobs: `unit` verifica formatação, dependências, vulnerabilidades alcançáveis (`make vuln`), testes, race detector, análise estática e build; `integration` executa `make test-integration`, com logs e limpeza controlados pelo mesmo script local. O scanner tem versão fixada no Makefile; a base de vulnerabilidades é atualizada pelo projeto Go.
 
 A CI valida processos no mesmo host com SQS emulado. Não representa um ensaio de indisponibilidade regional da AWS ou de um cluster PostgreSQL.

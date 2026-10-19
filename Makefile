@@ -1,11 +1,12 @@
 COMPOSE = docker compose -f docker-compose.local.yml
 TEST_COMPOSE = docker compose -p jungle-tests -f docker-compose.test.yml
+GOVULNCHECK_VERSION = v1.9.0
 export DATABASE_URL ?= postgres://jungle:jungle@localhost:5432/jungle?sslmode=disable
 export TEST_DATABASE_URL ?= postgres://jungle_test:jungle_test@localhost:55432/jungle_test?sslmode=disable
 export TEST_OIDC_ISSUER_URL ?= http://localhost:58081/realms/wagercore
 export TEST_SQS_ENDPOINT ?= http://localhost:54566
 
-.PHONY: run build test race vet fmt check up down migrate-up migrate-down migrate-status test-db-up test-db-down test-deps-up test-deps-down test-integration test-concurrency test-failover benchmark benchmark-e2e
+.PHONY: run build test race vet vuln fmt check up down migrate-up migrate-down migrate-status test-db-up test-db-down test-deps-up test-deps-down test-integration test-concurrency test-failover benchmark benchmark-e2e
 
 run:
 	go run ./cmd/server
@@ -22,6 +23,9 @@ race:
 
 vet:
 	go vet ./...
+
+vuln:
+	go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
 
 fmt:
 	gofmt -w cmd internal migrations tests

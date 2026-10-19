@@ -1,0 +1,1 @@
+ALTER TABLE outbox DROP CONSTRAINT outbox_publication_envelope_check;

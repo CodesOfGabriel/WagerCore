@@ -98,7 +98,11 @@ Para voltar à execução em containers, encerre `make run` com `Ctrl+C` e execu
 
 A configuração completa está em [.env.example](.env.example). `DATABASE_MAX_CONNECTIONS` limita o pool de cada processo. `WORKER_ROLES` aceita `all`, `none`, `consumer`, `publisher` ou `references`. `WORKER_CONCURRENCY` limita os lotes e o trabalho simultâneo de cada worker; o consumidor recebe no máximo dez mensagens por lote.
 
+O Compose local repassa do `.env` as opções de pool, saúde, workers, leases, visibilidade e referências. Ambiente (`local`), endereços, portas e credenciais dos serviços locais são definidos na composição; os endpoints de PostgreSQL, JWKS e SQS usam nomes internos dos containers. Para alterar esses valores, edite a composição ou use um arquivo de override. A execução no host usa os endereços de `.env.example`.
+
 `REFERENCE_TTL`, `REFERENCE_MAX_ATTEMPTS` e `RETRY_BASE` controlam referências ausentes. `LEASE_DURATION` controla reservas de publicação e retomada; `SQS_VISIBILITY_TIMEOUT` controla a reentrega do broker. Os padrões dão margem aos prazos de operação, de cinco segundos nos publishers e dez no consumidor.
+
+O TTL limita a espera pela referência; o lease reserva uma tentativa de retomada. A retomada verifica ambos separadamente, portanto o TTL pode ser menor que o lease.
 
 Em produção, os workers ativos exigem janelas maiores que a tentativa completa: lease acima de 12s para publisher/referências (5s de reserva + 5s de processamento + 2s de limpeza) e visibilidade acima de 12s para o consumidor (10s + 2s). O padrão continua em 30s. `local` e `test` permitem os intervalos curtos usados nos cenários de recuperação.
 
@@ -127,7 +131,7 @@ make migrate-down
 | 3 | Inbox, snapshots da outbox, ordem por carteira e reservas |
 | 4 | Rastreio da origem e rejeições por limites de saldo e versão |
 
-A reversão da versão 4 falha se houver rejeições incompatíveis com a restrição antiga. Reverter a versão 3 remove o histórico de mensageria; reverter a versão 1 remove os dados financeiros. Reversões não fazem parte da inicialização normal.
+A versão 5 valida os envelopes existentes na outbox e recusa histórico incompatível, sem alterar seus snapshots; confira o [diagnóstico](docs/DIAGNOSTICO.md#outbox-e-referências) se a atualização falhar. Sua reversão remove essa validação. A reversão da versão 4 falha se houver rejeições incompatíveis com a restrição antiga. Reverter a versão 3 remove o histórico de mensageria; reverter a versão 1 remove os dados financeiros. Reversões não fazem parte da inicialização normal.
 
 ## Testes
 

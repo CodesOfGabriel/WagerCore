@@ -3,16 +3,121 @@
 package integration_test
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
 	"junglegaming/internal/adapters/postgres"
 	"junglegaming/internal/application"
 	"junglegaming/internal/domain"
 )
+
+func TestOutboxRejectsInvalidPublicationEnvelope(t *testing.T) {
+	db := newDatabase(t, true)
+	p := startServer(t, db)
+	openAPIWallet(t, p, token(t, "internal-service"), "100.00")
+	var walletID, aggregateID, eventType string
+	var payload []byte
+	var occurredAt time.Time
+	if err := db.conn.QueryRow(db.ctx, `SELECT wallet_id::text,aggregate_id::text,event_type,payload,occurred_at FROM outbox ORDER BY sequence LIMIT 1`).Scan(&walletID, &aggregateID, &eventType, &payload, &occurredAt); err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{"wallet mismatch", func(e map[string]any) { e["data"].(map[string]any)["walletId"] = newID() }},
+		{"missing wallet", func(e map[string]any) { delete(e["data"].(map[string]any), "walletId") }},
+		{"null wallet", func(e map[string]any) { e["data"].(map[string]any)["walletId"] = nil }},
+		{"numeric wallet", func(e map[string]any) { e["data"].(map[string]any)["walletId"] = 42 }},
+		{"missing data", func(e map[string]any) { delete(e, "data") }},
+		{"array data", func(e map[string]any) { e["data"] = []any{} }},
+		{"missing correlation", func(e map[string]any) { delete(e, "correlationId") }},
+		{"numeric correlation", func(e map[string]any) { e["correlationId"] = 42 }},
+		{"object causation", func(e map[string]any) { e["causationId"] = map[string]any{} }},
+		{"missing transaction", func(e map[string]any) { delete(e["data"].(map[string]any), "transactionId") }},
+		{"numeric transaction", func(e map[string]any) { e["data"].(map[string]any)["transactionId"] = 42 }},
+		{"array external transaction", func(e map[string]any) { e["data"].(map[string]any)["externalTransactionId"] = []any{} }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var envelope map[string]any
+			if err := json.Unmarshal(payload, &envelope); err != nil {
+				t.Fatal(err)
+			}
+			id := newID()
+			envelope["eventId"] = id
+			tt.mutate(envelope)
+			invalid, err := json.Marshal(envelope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			db.expectFailure(t, "23514", func(tx pgx.Tx) error {
+				_, err := tx.Exec(db.ctx, `INSERT INTO outbox (event_id,wallet_id,aggregate_id,event_type,payload,occurred_at) VALUES ($1,$2,$3,$4,$5::jsonb,$6)`, id, walletID, aggregateID, eventType, string(invalid), occurredAt)
+				return err
+			})
+		})
+	}
+}
+
+func TestOutboxEnvelopeMigrationValidatesHistory(t *testing.T) {
+	for _, invalid := range []bool{false, true} {
+		name := "valid history"
+		if invalid {
+			name = "invalid history"
+		}
+		t.Run(name, func(t *testing.T) {
+			db := newDatabase(t, true)
+			p := startServer(t, db)
+			openAPIWallet(t, p, token(t, "internal-service"), "100.00")
+			if result, err := db.runner.Run(db.ctx, "down"); err != nil || result.Version != 4 {
+				t.Fatalf("revert envelope guard: %+v %v", result, err)
+			}
+			id := newID()
+			var wallet string
+			if err := db.conn.QueryRow(db.ctx, "SELECT wallet_id::text FROM outbox ORDER BY sequence LIMIT 1").Scan(&wallet); err != nil {
+				t.Fatal(err)
+			}
+			if invalid {
+				wallet = newID()
+			}
+			// Insert through the previous schema, preserving the original events.
+			if _, err := db.conn.Exec(db.ctx, `INSERT INTO outbox (event_id,wallet_id,aggregate_id,event_type,payload,occurred_at)
+                SELECT $1::uuid,wallet_id,aggregate_id,event_type,
+                    jsonb_set(jsonb_set(payload,'{eventId}',to_jsonb(($1::uuid)::text)),
+                        '{data,walletId}',to_jsonb($2::text)),occurred_at
+                FROM outbox ORDER BY sequence LIMIT 1`, id, wallet); err != nil {
+				t.Fatal(err)
+			}
+			var before, after []byte
+			if err := db.conn.QueryRow(db.ctx, "SELECT payload FROM outbox WHERE event_id=$1", id).Scan(&before); err != nil {
+				t.Fatal(err)
+			}
+			result, err := db.runner.Run(db.ctx, "up")
+			wantVersion := int64(5)
+			if invalid {
+				wantVersion = 4
+				var pgError *pgconn.PgError
+				if !errors.As(err, &pgError) || pgError.Code != "23514" || pgError.ConstraintName != "outbox_publication_envelope_check" {
+					t.Fatalf("invalid history accepted: result=%+v error=%v", result, err)
+				}
+			} else if err != nil || result.Version != 5 || result.Changed != 1 {
+				t.Fatalf("valid history rejected: result=%+v error=%v", result, err)
+			}
+			status, err := db.runner.Run(db.ctx, "status")
+			if err != nil || status.Version != wantVersion {
+				t.Fatalf("migration status: %+v error=%v", status, err)
+			}
+			if err := db.conn.QueryRow(db.ctx, "SELECT payload FROM outbox WHERE event_id=$1", id).Scan(&after); err != nil || string(before) != string(after) {
+				t.Fatalf("migration changed the snapshot: %v", err)
+			}
+		})
+	}
+}
 
 func TestMessagingRetentionOrderingAndLeaseFencing(t *testing.T) {
 	db := newDatabase(t, true)

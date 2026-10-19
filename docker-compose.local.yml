@@ -65,10 +65,20 @@ services:
   app:
     build: .
     environment:
+      APP_ENV: local
       HTTP_ADDR: :8080
       DATABASE_URL: postgres://jungle:jungle@postgres:5432/jungle?sslmode=disable
+      DATABASE_MAX_CONNECTIONS: ${DATABASE_MAX_CONNECTIONS:-10}
       HEALTH_TIMEOUT: ${HEALTH_TIMEOUT:-2s}
+      WORKER_ROLES: ${WORKER_ROLES:-all}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
+      WORKER_INTERVAL: ${WORKER_INTERVAL:-200ms}
       DLQ_POLL_INTERVAL: ${DLQ_POLL_INTERVAL:-30s}
+      LEASE_DURATION: ${LEASE_DURATION:-30s}
+      SQS_VISIBILITY_TIMEOUT: ${SQS_VISIBILITY_TIMEOUT:-30}
+      REFERENCE_TTL: ${REFERENCE_TTL:-10m}
+      REFERENCE_MAX_ATTEMPTS: ${REFERENCE_MAX_ATTEMPTS:-10}
+      RETRY_BASE: ${RETRY_BASE:-1s}
       OIDC_ISSUER_URL: http://localhost:8081/realms/wagercore
       OIDC_JWKS_URL: http://keycloak:8080/realms/wagercore/protocol/openid-connect/certs
       SQS_ENDPOINT: http://localstack:4566

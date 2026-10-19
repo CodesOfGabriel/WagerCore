@@ -23,6 +23,8 @@ Os testes consultam saldo, versão, transações, ledger, inbox e outbox conform
 
 A suíte também mantém os testes de constraints, imutabilidade, limites de `int64`, referências, aplicação e reversão de migrations, rollback de DDL e checksum.
 
+`TestOutboxRejectsInvalidPublicationEnvelope` verifica rejeição de carteira divergente, campos ausentes e tipos incompatíveis com o publisher. `TestOutboxEnvelopeMigrationValidatesHistory` verifica atualização de histórico válido e recusa atômica de histórico incompatível, preservando a versão anterior e os bytes do evento.
+
 ## Interrupções e retomada
 
 `make test-failover` seleciona os testes abaixo e a falha SQL antes do commit. A aplicação só permite os pontos de encerramento forçado no ambiente de teste, filtrados pelo ID externo.

@@ -75,6 +75,10 @@ A ausência de `sqs_completed` após `sqs_processed` exige conferir a confirmaç
 
 `outbox_publish_retry` distingue `decode_event`, `publish` e `confirm_publication`. `outbox_sent` confirma o envio ao broker, mas a confirmação local ainda pode falhar. Nesse caso, a nova tentativa preserva o mesmo `eventId` e snapshot.
 
+A constraint `outbox_publication_envelope_check`, adicionada pela migration `000005`, recusa snapshots com carteira divergente ou tipos incompatíveis com o publisher antes de confirmar a inserção. A aplicação normal usa dados tipados; essa proteção também cobre inserções por versões defeituosas ou scripts. Se já houver um snapshot incompatível, a migration falha e preserva os registros. Investigue o `eventId`, a carteira e a versão que inseriu o registro antes de preparar uma correção revisada.
+
+Um registro inválido já persistido é um incidente: acompanhe os retries, a idade e o backlog da carteira, preserve o snapshot e interrompa os publishers durante a investigação se necessário. Não apague o evento nem marque `published_at` para liberar os posteriores. Não há quarentena com avanço automático nesta implementação; isso mudaria a garantia de ordem e entrega. A correção de histórico exige uma política explícita de reparo auditado.
+
 `outbox_retry_schedule_failed` e `reference_retry_schedule_failed` indicam falha ao persistir a próxima tentativa; o lease continua sendo o mecanismo de retomada. Reservas perdidas são registradas em DEBUG como `outbox_lease_lost`, `outbox_retry_lease_lost` ou `reference_retry_lease_lost`. O worker antigo não confirma nem reagenda um lease vencido, liberado ou reassumido.
 
 `reference_retry`, na etapa `resume_reference`, informa falhas técnicas na retomada de uma transação pendente. `reference_failed` indica que uma falha permanente foi auditada e encerrou a referência em `FAILED`. A resolução ou rejeição da referência deve ser conferida na consulta da transação. Falhas nas consultas de métricas geram `outbox_stats_failed` ou `dlq_stats_failed`; o último valor da métrica pode estar desatualizado.

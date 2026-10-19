@@ -70,6 +70,8 @@ O padrão é dez tentativas, TTL de dez minutos e backoff a partir de um segundo
 
 Cada evento tem tipo concreto, ID estável, aggregate, correlação, causação opcional, instante, versão 1 e dados tipados. Os construtores capturam o estado e retornam cópias dos bytes. A outbox guarda o JSON completo; a publicação não reconstrói dados a partir do saldo corrente.
 
+A migration `000005` valida no banco os tipos dos campos lidos pelo publisher e exige `data.walletId` igual à carteira da linha. A constraint também examina os snapshots existentes; um registro incompatível impede a atualização do schema, sem reescrever o histórico. Isso protege o envelope de publicação, sem substituir a validação financeira dos construtores de domínio.
+
 Movimentos geram `WagerTransactionProcessed` e `WalletBalanceChanged`. `LOSS` gera apenas o primeiro. Rejeições geram `WagerTransactionRejected`; a primeira pendência gera `WagerTransactionPendingReference`. `OPENING` omite metadados externos inaplicáveis.
 
 A outbox usa sequência persistida e índice das pendências por carteira para preservar a ordem de publicação entre instâncias. O publisher reserva apenas o primeiro evento ainda não publicado de cada carteira. Isso preserva a ordem também com vários publishers, mantendo carteiras diferentes em paralelo. Uma falha temporária pode atrasar eventos posteriores da mesma carteira.
