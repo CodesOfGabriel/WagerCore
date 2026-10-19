@@ -1,0 +1,44 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Formatting
+        run: test -z "$(gofmt -l cmd internal migrations tests)"
+      - run: go mod download
+      - run: go mod verify
+      - run: make check
+      - run: make build
+
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Start PostgreSQL, Keycloak and LocalStack
+        run: make test-deps-up
+      - name: Financial processing, concurrency and recovery
+        run: make test-integration
+      - name: Service logs
+        if: failure()
+        run: docker compose -p jungle-tests -f docker-compose.test.yml logs --no-color
+      - name: Stop test services
+        if: always()
+        run: make test-deps-down

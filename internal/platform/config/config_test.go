@@ -54,3 +54,46 @@ func TestLoadRejectsInvalidEnvironment(t *testing.T) {
 		})
 	}
 }
+
+func TestWorkerAndAuthenticationConfiguration(t *testing.T) {
+	for _, tt := range []struct{ key, value string }{
+		{"OIDC_ISSUER_URL", ""}, {"OIDC_JWKS_URL", "https://user:password@example.com/keys"}, {"OIDC_AUDIENCE", ""},
+		{"WORKER_ROLES", "invalid"}, {"WORKER_CONCURRENCY", "0"}, {"DATABASE_MAX_CONNECTIONS", "65"},
+		{"LEASE_DURATION", "0s"}, {"REFERENCE_TTL", "2h"}, {"REFERENCE_MAX_ATTEMPTS", "0"}, {"RETRY_BASE", "invalid"},
+		{"SQS_VISIBILITY_TIMEOUT", "0"}, {"FAULT_POINT", "after_financial_commit"},
+	} {
+		t.Run(tt.key+"="+tt.value, func(t *testing.T) {
+			t.Setenv("DATABASE_URL", "postgres://localhost/test")
+			t.Setenv(tt.key, tt.value)
+			if _, err := config.Load(); err == nil {
+				t.Fatal("invalid setting accepted")
+			}
+		})
+	}
+	t.Run("faults restricted to test environment", func(t *testing.T) {
+		t.Setenv("DATABASE_URL", "postgres://localhost/test")
+		t.Setenv("FAULT_POINT", "after_sqs_commit")
+		t.Setenv("FAULT_TRANSACTION", "target")
+		t.Setenv("APP_ENV", "production")
+		if _, err := config.Load(); err == nil {
+			t.Fatal("faults enabled in production")
+		}
+		t.Setenv("APP_ENV", "test")
+		if _, err := config.Load(); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("AWS default credential chain", func(t *testing.T) {
+		t.Setenv("DATABASE_URL", "postgres://localhost/test")
+		t.Setenv("SQS_ENDPOINT", "")
+		t.Setenv("AWS_ACCESS_KEY_ID", "")
+		t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+		if _, err := config.Load(); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("AWS_ACCESS_KEY_ID", "test")
+		if _, err := config.Load(); err == nil {
+			t.Fatal("incomplete credential pair accepted")
+		}
+	})
+}

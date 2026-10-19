@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"testing"
 	"time"
@@ -29,6 +30,17 @@ type executor interface {
 	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
 }
 
+func (db *database) url() string {
+	value, err := url.Parse(db.config.ConnString())
+	if err != nil {
+		panic(err)
+	}
+	query := value.Query()
+	query.Set("search_path", db.config.RuntimeParams["search_path"])
+	value.RawQuery = query.Encode()
+	return value.String()
+}
+
 func newDatabase(t *testing.T, migrate bool) *database {
 	t.Helper()
 	url := os.Getenv("TEST_DATABASE_URL")
@@ -39,7 +51,7 @@ func newDatabase(t *testing.T, migrate bool) *database {
 	if err != nil {
 		t.Fatal("invalid TEST_DATABASE_URL")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	t.Cleanup(cancel)
 	conn, err := pgx.ConnectConfig(ctx, cfg)
 	if err != nil {

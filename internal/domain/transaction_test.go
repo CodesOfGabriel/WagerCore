@@ -161,6 +161,8 @@ func TestTransactionRejectsInvalidInputAndTransitions(t *testing.T) {
 	}{
 		{"missing provider", func(s *domain.TransactionInput) { s.ProviderID = "" }},
 		{"whitespace", func(s *domain.TransactionInput) { s.RoundID = " round " }},
+		{"control character", func(s *domain.TransactionInput) { s.ExternalTransactionID = "bet\n001" }},
+		{"null byte", func(s *domain.TransactionInput) { s.IdempotencyKey = "key\x00value" }},
 		{"oversized key", func(s *domain.TransactionInput) { s.IdempotencyKey = strings.Repeat("a", 256) }},
 		{"missing hash", func(s *domain.TransactionInput) { s.PayloadHash = "" }},
 		{"invalid hash", func(s *domain.TransactionInput) { s.PayloadHash = strings.Repeat("zz", 32) }},

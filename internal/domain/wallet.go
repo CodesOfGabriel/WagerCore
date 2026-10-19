@@ -39,10 +39,10 @@ func (w *Wallet) Validate() error {
 	if w == nil {
 		return ErrInvalidWallet
 	}
-	if err := validateID(w.state.ID); err != nil {
+	if err := ValidateID(w.state.ID); err != nil {
 		return err
 	}
-	if err := validateID(w.state.PlayerID); err != nil {
+	if err := ValidateID(w.state.PlayerID); err != nil {
 		return err
 	}
 	if err := validateNonNegative(w.state.Balance); err != nil {

@@ -23,8 +23,8 @@ func TestMigrationApplyRevertAndChecksum(t *testing.T) {
 		version int64
 		changed int
 	}{
-		{"status", 0, 0}, {"up", 2, 2}, {"up", 2, 0}, {"status", 2, 0},
-		{"down", 1, 1}, {"down", 0, 1}, {"down", 0, 0}, {"up", 2, 2},
+		{"status", 0, 0}, {"up", 4, 4}, {"up", 4, 0}, {"status", 4, 0},
+		{"down", 3, 1}, {"down", 2, 1}, {"down", 1, 1}, {"down", 0, 1}, {"down", 0, 0}, {"up", 4, 4},
 	} {
 		result, err := db.runner.Run(db.ctx, tt.action)
 		if err != nil || result.Version != tt.version || result.Changed != tt.changed {
@@ -82,13 +82,13 @@ func TestConcurrentMigrations(t *testing.T) {
 	changed := 0
 	for range 2 {
 		outcome := <-results
-		if outcome.err != nil || outcome.result.Version != 2 {
+		if outcome.err != nil || outcome.result.Version != 4 {
 			t.Fatalf("concurrent migration result=%+v error=%v", outcome.result, outcome.err)
 		}
 		changed += outcome.result.Changed
 	}
-	if changed != 2 {
-		t.Fatalf("applied %d migrations, want 2", changed)
+	if changed != 4 {
+		t.Fatalf("applied %d migrations, want 4", changed)
 	}
 }
 
@@ -96,7 +96,7 @@ func TestMigrationRevertWithFinancialHistory(t *testing.T) {
 	db := newDatabase(t, true)
 	w := db.openWallet(t, 10000)
 	db.processAndCommit(t, newOperation(w, "BET", 2500), "DEBIT")
-	for _, want := range []int64{1, 0} {
+	for _, want := range []int64{3, 2, 1, 0} {
 		result, err := db.runner.Run(db.ctx, "down")
 		if err != nil || result.Version != want {
 			t.Fatalf("result=%+v error=%v", result, err)

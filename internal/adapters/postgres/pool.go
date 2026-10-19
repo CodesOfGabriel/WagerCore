@@ -17,6 +17,7 @@ func NewPool(lifecycle fx.Lifecycle, cfg config.Config, logger *slog.Logger) (*p
 		return nil, errors.New("invalid DATABASE_URL")
 	}
 	poolConfig.ConnConfig.ConnectTimeout = cfg.HealthTimeout
+	poolConfig.MaxConns = int32(cfg.DatabaseMaxConnections)
 	pool, err := pgxpool.NewWithConfig(context.Background(), poolConfig)
 	if err != nil {
 		return nil, errors.New("cannot create PostgreSQL pool")

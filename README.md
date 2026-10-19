@@ -1,149 +1,149 @@
 # WagerCore
 
-Backend em Go para processamento distribuído de operações financeiras de jogos.
+Backend em Go para operações financeiras de jogos, com entrada por HTTP e SQS FIFO. Carteira, transação, ledger e eventos são confirmados em uma transação PostgreSQL. A deduplicação permanece válida entre processos e após reinícios.
 
-O projeto contém a base HTTP com Uber Fx, o domínio financeiro e migrations de carteiras, transações e ledger. Os endpoints financeiros serão implementados com autenticação na próxima etapa.
+Implementa `BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK`, abertura interna, referências pendentes, inbox, outbox e reconciliação. A API usa tokens do Keycloak e separa o serviço interno dos provedores.
 
-- [Decisões de arquitetura](ARCHITECTURE.md)
-- [Cenários de resiliência e desempenho](docs/CENARIOS.md)
+- [Contratos da API e exemplos](docs/API.md)
+- [Arquitetura e regras financeiras](ARCHITECTURE.md)
+- [Cenários e evidências de validação](docs/CENARIOS.md)
 
-## Pré-requisitos
+## Ambiente local
 
-- Go 1.27.2 para executar e testar fora dos containers.
-- Docker Engine e Docker Compose v2 para o ambiente local.
-- Portas 8080 e 5432 disponíveis.
-- Porta 55432 disponível para os testes de integração.
-
-## Executar com Docker
+Requisitos: Docker com Compose v2. Para executar Go fora dos containers, use Go 1.27.2. Os exemplos de token também usam `curl` e Python 3.
 
 ```sh
-docker compose -f docker-compose.local.yml up --build
+make up
 ```
 
-O Compose inicia PostgreSQL, aplica as migrations e inicia a aplicação. O banco utiliza um volume persistente e credenciais locais de exemplo. Uma falha nas migrations impede o início da aplicação. `make up` executa o mesmo comando.
+O Compose inicia PostgreSQL, Keycloak e LocalStack, importa o realm, cria três filas e aplica as migrations antes de iniciar a API. As credenciais presentes no repositório são exemplos para esse ambiente local.
+
+| Serviço | Endereço |
+| --- | --- |
+| API | http://localhost:8080 |
+| Keycloak | http://localhost:8081 |
+| LocalStack | http://localhost:4566 |
+| PostgreSQL | localhost:5432 |
 
 ```sh
 curl -i http://localhost:8080/health/live
 curl -i http://localhost:8080/health/ready
 ```
 
-| Rota | Resposta |
-| --- | --- |
-| `GET /health/live` | `200` com `{"status":"alive"}` |
-| `GET /health/ready` | `200` se o PostgreSQL responder; `503` se estiver indisponível |
+Liveness verifica o processo. Readiness consulta PostgreSQL e as três filas SQS. Ambos são públicos; as rotas de negócio e `/metrics` exigem autenticação.
 
-Nesta etapa, readiness verifica apenas PostgreSQL. A verificação de SQS será incluída junto da mensageria. Os health checks são públicos. Os endpoints financeiros serão adicionados com autenticação OIDC.
-
-Para encerrar preservando os dados:
+Para encerrar preservando PostgreSQL e Keycloak:
 
 ```sh
 make down
 ```
 
-## Executar o Go localmente
+As filas locais são recriadas quando o LocalStack inicia. A outbox permanece no PostgreSQL; eventos já confirmados como publicados não são republicados automaticamente quando o emulador é recriado.
 
-Inicie apenas o banco:
+## Primeira operação
+
+O realm `wagercore` contém `internal-service`, `provider-a` e `provider-b`, provisionados com client credentials. A audience da API é `wagercore-api`.
 
 ```sh
-docker compose -f docker-compose.local.yml up -d --wait postgres
+INTERNAL_TOKEN=$(./scripts/token.sh internal-service)
+PROVIDER_TOKEN=$(./scripts/token.sh provider-a)
+
+curl --fail-with-body http://localhost:8080/wallets \
+  -H "Authorization: Bearer $INTERNAL_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"playerId":"0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1","initialBalance":{"amount":"100.00","currency":"BRL"}}'
+```
+
+Copie o `id` retornado para `WALLET_ID`:
+
+```sh
+WALLET_ID='id-retornado-pela-abertura'
+
+curl --fail-with-body http://localhost:8080/wagering/transactions \
+  -H "Authorization: Bearer $PROVIDER_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: provider-a:bet-001' \
+  -d "{\"providerId\":\"provider-a\",\"externalTransactionId\":\"bet-001\",\"playerId\":\"0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1\",\"walletId\":\"$WALLET_ID\",\"roundId\":\"round-1\",\"gameId\":\"game-1\",\"kind\":\"BET\",\"money\":{\"amount\":\"25.00\",\"currency\":\"BRL\"}}"
+
+curl --fail-with-body -X POST "http://localhost:8080/wallets/$WALLET_ID/reconciliation" \
+  -H "Authorization: Bearer $INTERNAL_TOKEN"
+```
+
+A aposta retorna saldo `75.00`. Repetir o mesmo envio devolve o resultado persistido com `idempotentReplay: true`. Repetir a abertura do mesmo jogador e moeda retorna `409`.
+
+## Executar Go no host
+
+```sh
+docker compose -f docker-compose.local.yml up -d --wait postgres keycloak localstack
 cp .env.example .env
 set -a
 . ./.env
 set +a
-go run ./cmd/migrate up
-go run ./cmd/server
+make migrate-up
+make run
 ```
 
-A aplicação lê variáveis do processo. O carregamento do arquivo `.env` é feito pelo shell nos comandos acima.
+A aplicação lê o ambiente do processo. O arquivo `.env` é carregado pelo shell no exemplo acima. A API do Compose deve estar parada para liberar a porta 8080.
 
-| Variável | Padrão | Uso |
-| --- | --- | --- |
-| `DATABASE_URL` | Obrigatória | Conexão PostgreSQL |
-| `HTTP_ADDR` | `:8080` | Endereço HTTP local |
-| `HEALTH_TIMEOUT` | `2s` | Prazo de verificação do banco, maior que zero e até `5s` |
-| `TEST_DATABASE_URL` | Definida no Makefile | Banco separado para os testes de integração |
+A configuração completa está em [.env.example](.env.example). `DATABASE_MAX_CONNECTIONS` limita o pool de cada processo. `WORKER_ROLES` aceita `all`, `none`, `consumer`, `publisher` ou `references`. `WORKER_CONCURRENCY` limita os lotes e o trabalho simultâneo de cada worker; o consumidor recebe no máximo dez mensagens por lote.
 
-No Compose, os endereços da aplicação e do banco estão definidos para a rede dos containers. `HEALTH_TIMEOUT` pode ser sobrescrito pelo ambiente ou por `.env`.
+`REFERENCE_TTL`, `REFERENCE_MAX_ATTEMPTS` e `RETRY_BASE` controlam referências ausentes. `LEASE_DURATION` controla reservas de publicação e retomada; `SQS_VISIBILITY_TIMEOUT` controla a reentrega do broker. Os padrões dão margem aos prazos de operação, de cinco segundos nos publishers e dez no consumidor.
 
-A inicialização falha quando a configuração é inválida, o banco está indisponível ou a porta HTTP está ocupada. `SIGINT` e `SIGTERM` iniciam o encerramento do servidor antes do fechamento do pool PostgreSQL.
+`OIDC_ISSUER_URL` precisa corresponder ao emissor do token. `OIDC_JWKS_URL` pode usar o endereço interno do Keycloak; isso permite validar no container tokens obtidos pelo host. Para usar AWS, deixe `SQS_ENDPOINT`, `AWS_ACCESS_KEY_ID` e `AWS_SECRET_ACCESS_KEY` vazios e forneça credenciais pela cadeia padrão do SDK, com acesso às filas indicadas na arquitetura.
+
+`SIGINT` e `SIGTERM` encerram o HTTP, cancelam os workers e fecham as conexões. Configuração inválida ou dependências indisponíveis impedem a inicialização.
 
 ## Migrations
-
-Com o PostgreSQL local iniciado:
 
 ```sh
 make migrate-up
 make migrate-status
-```
-
-`migrate-up` aplica todas as versões pendentes. `migrate-status` informa a versão atual. Esses comandos usam `DATABASE_URL`, com o mesmo endereço local de `.env.example` como padrão.
-
-Para reverter a última versão:
-
-```sh
 make migrate-down
 ```
 
-Cada execução de `down` reverte uma versão. A versão 2 protege a retenção das transações. Reverter a versão 1 remove as tabelas financeiras e seus dados. As reversões são comandos explícitos e não fazem parte da inicialização normal.
+`up` aplica todas as pendentes em uma transação com lock de migração. `down` reverte uma versão. O histórico verifica checksum; arquivos já aplicados não devem ser alterados.
 
-Os arquivos SQL ficam em `migrations/` e são incluídos no binário `migrate`. O histórico guarda versão e checksum. Alterar uma migration já aplicada bloqueia a execução; mudanças no banco exigem uma nova versão.
+| Versão | Conteúdo |
+| --- | --- |
+| 1 | Carteiras, transações, ledger e invariantes financeiras |
+| 2 | Retenção de transações auditáveis |
+| 3 | Inbox, snapshots da outbox, ordem por carteira e reservas |
+| 4 | Rastreio da origem e rejeições por limites de saldo e versão |
+
+A reversão da versão 4 falha se houver rejeições incompatíveis com a restrição antiga. Reverter a versão 3 remove o histórico de mensageria; reverter a versão 1 remove os dados financeiros. Reversões não fazem parte da inicialização normal.
 
 ## Testes
 
 ```sh
-go test ./...
-go test -race ./...
-go vet ./...
-go build -o bin/server ./cmd/server
-go build -o bin/migrate ./cmd/migrate
-docker compose -f docker-compose.local.yml config --quiet
-```
-
-Os testes sem build tag verificam o domínio, a configuração, os handlers de saúde, a composição Fx e o ciclo de vida HTTP.
-
-Para verificar migrations e restrições em PostgreSQL real:
-
-```sh
-make test-db-up
+make check
+make build
+make test-deps-up
 make test-integration
-make test-db-down
+make test-deps-down
 ```
 
-O banco de testes usa a porta 55432 e armazenamento temporário, separado do banco local na porta 5432. Cada teste cria seu próprio schema e o remove ao terminar. A ausência de `TEST_DATABASE_URL` causa falha explícita quando a suíte é chamada diretamente:
+`make check` executa testes, race detector e `go vet`. A integração usa PostgreSQL em 55432, Keycloak em 58081 e LocalStack em 54566, separados do ambiente local. Cada teste cria e remove seu schema; os cenários SQS compartilham filas de teste e executam em sequência. Não execute duas suítes de integração ao mesmo tempo no mesmo ambiente.
 
 ```sh
-TEST_DATABASE_URL='postgres://jungle_test:jungle_test@localhost:55432/jungle_test?sslmode=disable' \
-  go test -race -tags=integration ./tests/integration/...
+make test-concurrency
+make test-failover
 ```
 
-A suíte cobre aplicação e reversão das migrations, checksum, saldo não negativo, unicidade, imutabilidade do ledger, atomicidade, referências e limites de `int64`. Ainda não representa o processamento por HTTP/SQS nem os testes com três instâncias.
+Esses alvos selecionam cenários da suíte completa. Os testes iniciam três processos Go independentes quando necessário, usam tokens reais e consultam o estado financeiro no PostgreSQL. A falta de `TEST_DATABASE_URL` causa falha explícita ao executar `go test -tags=integration` diretamente; o Makefile fornece os endereços padrão.
 
-Para explorar parsing e aritmética com fuzzing:
-
-```sh
-go test ./internal/domain -run='^$' -fuzz=FuzzMoneyParsing -fuzztime=10s
-go test ./internal/domain -run='^$' -fuzz=FuzzMoneyArithmetic -fuzztime=10s
-```
-
-O `Makefile` reúne os comandos de execução, verificação, migrations e banco de testes.
+A CI executa verificações Go e a mesma suíte com os três serviços. A matriz de cenários e os limites das demonstrações estão em [CENARIOS.md](docs/CENARIOS.md).
 
 ## Estrutura
 
 ```text
-cmd/server/                 Entrada da aplicação
-cmd/migrate/                Aplicação e reversão das migrations
-internal/bootstrap/         Composição e ciclo de vida com Fx
-internal/platform/config/   Leitura e validação do ambiente
-internal/adapters/http/     Servidor e health checks
-internal/adapters/postgres/ Pool de conexões
-internal/domain/            Money, Wallet, WagerTransaction e WalletLedgerEntry
-migrations/                 Schema financeiro e proteções do histórico
-tests/integration/          Verificações com PostgreSQL real
-docs/                       Cenários de resiliência e desempenho
+cmd/server/                  Entrada da aplicação
+cmd/migrate/                 Migrações versionadas
+internal/domain/             Money, entidades e eventos imutáveis
+internal/application/        Casos de uso e portas transacionais
+internal/adapters/           HTTP, PostgreSQL, OIDC e SQS
+internal/platform/           Configuração, workers, métricas e falhas de teste
+internal/bootstrap/          Composição e ciclo de vida com Fx
+migrations/                  Schema e restrições
+tests/integration/          Processos, serviços reais e recuperação
+deployments/                Realm e filas locais
 ```
-
-## Próxima etapa
-
-Implementar Keycloak, autorização, repositórios e o caso de uso transacional de abertura e BET. A API deve confirmar resultado, carteira, ledger e outbox no mesmo commit.
-
-Ainda estão pendentes os endpoints financeiros, o fluxo completo de idempotência, SQS, inbox/outbox, workers, reconciliação, métricas e testes distribuídos. O schema já protege as identidades financeiras; o tratamento de replay e conflito será implementado no caso de uso.

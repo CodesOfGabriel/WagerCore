@@ -2,8 +2,10 @@ COMPOSE = docker compose -f docker-compose.local.yml
 TEST_COMPOSE = docker compose -p jungle-tests -f docker-compose.test.yml
 export DATABASE_URL ?= postgres://jungle:jungle@localhost:5432/jungle?sslmode=disable
 export TEST_DATABASE_URL ?= postgres://jungle_test:jungle_test@localhost:55432/jungle_test?sslmode=disable
+export TEST_OIDC_ISSUER_URL ?= http://localhost:58081/realms/wagercore
+export TEST_SQS_ENDPOINT ?= http://localhost:54566
 
-.PHONY: run build test race vet fmt check up down migrate-up migrate-down migrate-status test-db-up test-db-down test-integration
+.PHONY: run build test race vet fmt check up down migrate-up migrate-down migrate-status test-db-up test-db-down test-deps-up test-deps-down test-integration test-concurrency test-failover
 
 run:
 	go run ./cmd/server
@@ -47,5 +49,15 @@ test-db-up:
 test-db-down:
 	$(TEST_COMPOSE) down
 
+test-deps-up: test-db-up
+
+test-deps-down: test-db-down
+
 test-integration:
-	go test -race -tags=integration ./tests/integration/...
+	go test -race -tags=integration ./tests/integration/... -count=1 -timeout=5m
+
+test-concurrency:
+	go test -race -tags=integration ./tests/integration/... -run 'Test(ThreeProcesses|SQSInbox)' -count=1 -timeout=3m
+
+test-failover:
+	go test -race -tags=integration ./tests/integration/... -run 'Test(Crash|ReferenceWorker|MessagingRetention|AtomicRollback)' -count=1 -timeout=3m

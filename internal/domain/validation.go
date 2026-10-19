@@ -4,9 +4,11 @@ import (
 	"encoding/hex"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
-func validateID(id string) error {
+func ValidateID(id string) error {
 	if len(id) != 36 || id[8] != '-' || id[13] != '-' || id[18] != '-' || id[23] != '-' || id != strings.ToLower(id) {
 		return ErrInvalidID
 	}
@@ -23,7 +25,15 @@ func validateID(id string) error {
 }
 
 func validText(value string) bool {
-	return value != "" && len(value) <= 255 && value == strings.TrimSpace(value)
+	if value == "" || len(value) > 255 || value != strings.TrimSpace(value) || !utf8.ValidString(value) {
+		return false
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
 }
 
 func validTimes(createdAt, updatedAt time.Time) bool {

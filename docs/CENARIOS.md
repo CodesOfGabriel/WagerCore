@@ -1,91 +1,62 @@
-# Cenários de resiliência e desempenho
+# Cenários de validação
 
-Este documento define as demonstrações que serão construídas depois dos fluxos financeiros. Os comandos de execução ficam no README; as decisões de domínio e persistência ficam no ARCHITECTURE.
+A suíte usa PostgreSQL, Keycloak e LocalStack reais. Os processos Go compartilham banco e filas, com portas HTTP próprias. Os comandos de preparação estão no README; este documento relaciona cada cenário à garantia que ele verifica.
 
-Os cenários desta página estão planejados. Os testes atuais cobrem domínio e restrições no PostgreSQL, conforme descrito no README.
+Na execução local de 19/10/2026, `make check build`, `make test-integration` e `make test-failover` passaram. O Docker local iniciou saudável com schema na versão 4. Uma demonstração com abertura, BET e WIN por HTTP, nova BET por SQS e replays terminou com saldo `80.00`, quatro lançamentos reconciliados, inbox concluída e nenhuma pendência de publicação.
 
-## Distribuição de HTTP
+## Financeiro e autorização
 
-Adicionar Traefik quando abertura e BET já estiverem validadas. Ele será a entrada HTTP de três instâncias Go e usará `/health/ready` para retirar uma instância indisponível da rotação. SQS continuará entregando mensagens diretamente aos consumidores Go.
-
-As réplicas usarão portas internas, sem `container_name` fixo. Cada resposta terá um identificador de instância para permitir conferir a distribuição. O cliente poderá reenviar uma operação para qualquer réplica. Sessões não terão afinidade com uma instância, e o proxy não fará retry automático de POST.
-
-A descoberta Docker terá acesso restrito à API do daemon, por meio de um socket proxy com as permissões necessárias. Essa restrição faz parte da [configuração de segurança recomendada pelo Traefik](https://doc.traefik.io/traefik/reference/install-configuration/providers/docker/#docker-api-access). O dashboard administrativo, as métricas e os serviços de infraestrutura ficarão nas redes de acesso previstas para cada um. A aplicação continuará validando a autorização dos endpoints de negócio.
-
-O teste deve identificar pelo menos três processos independentes, encerrar uma instância, observar novas requisições nas outras duas e repetir os replays após a recuperação.
-
-## Interrupções controladas
-
-Preparar pontos de interrupção habilitados apenas no ambiente de teste. Cada ponto deve indicar a etapa alcançada antes de encerrar o processo.
-
-| Ponto da interrupção | Resultado que deve ser observado |
+| Teste de integração | Verificação |
 | --- | --- |
-| Antes do commit financeiro | Nenhum efeito parcial; reenvio processa uma vez |
-| Depois do commit e antes da resposta HTTP | Replay devolve o resultado persistido |
-| Depois do commit e antes de remover a mensagem SQS | Reentrega comprovada, sem outro movimento |
-| Depois do commit e antes de publicar a outbox | Outra instância publica o evento pendente |
-| Depois de publicar e antes de confirmar a outbox | Republicação com o mesmo `eventId` |
-| Com uma referência pendente ou lease ativo | Outra instância retoma o trabalho após a expiração da reserva |
+| `TestAuthenticatedWalletAndIdempotency` | Tokens reais, expiração, audience, papéis, isolamento de provedores, abertura positiva/zero, replay original, conflitos, paginação e reconciliação |
+| `TestFinancialOperationsAndReversals` | WIN, LOSS, REFUND, ROLLBACK, rejeições de referência, reversão única, saldo insuficiente na reversão e overflow |
+| `TestReconciliationReportsDivergenceWithoutRepair` | Corrupção deliberada em schema isolado aparece na resposta e na métrica, sem ajuste automático |
+| `TestAtomicRollbackWhenOutboxFails` | Uma falha SQL na outbox reverte abertura ou aposta por inteiro |
+| `TestThreeProcessesConcurrentBets` | Três processos, 50 envios da mesma BET, duas apostas concorrentes de 80 sobre 100 e replay após reinício |
+| `TestSQSInboxAndCrossChannelIdempotency` | Disputa HTTP/SQS, mensagens repetidas, inbox, conflito de hash e OPENING inválida na DLQ |
+| `TestReferenceWorkerResumesAfterRestart` | Referência recebida depois, continuação persistente e rejeição por prazo/tentativas |
 
-O futuro alvo `make test-failover` reunirá preparação, operações concorrentes, interrupção, recuperação e reconciliação. O resultado deverá ser calculado a partir do banco e das mensagens observadas.
+Os testes consultam saldo, versão, transações, ledger, inbox e outbox conforme o cenário. No caso de 50 envios iguais, exigem uma operação aplicada e 49 replays. No caso de duas apostas de 80, exigem uma processada, uma rejeitada e saldo 20. Uma carteira bloqueada por outra conexão não impede o avanço de outra carteira.
 
-O relatório mostrará quantidade de instâncias, processo interrompido, efeitos duplicados, saldos negativos, eventos confirmados sem recuperação, divergências de ledger e pendências encerradas incorretamente. Qualquer ocorrência invalida o cenário. Não serão usados números ilustrativos como resultado de execução.
+A suíte também mantém os testes de constraints, imutabilidade, limites de `int64`, referências, aplicação e reversão de migrations, rollback de DDL e checksum.
 
-## Concorrência e uso do PostgreSQL
+## Interrupções e retomada
 
-Manter validação de credenciais, parsing e hash fora da transação financeira. Dentro dela ficam reserva da identidade, locks, domínio e gravações. Chamadas ao IdP e publicações SQS ficam fora do período em que a carteira está bloqueada.
+`make test-failover` seleciona os testes abaixo e a falha SQL antes do commit. A aplicação só permite os pontos de encerramento forçado no ambiente de teste, filtrados pelo ID externo.
 
-O pool terá um limite configurável por instância. Dez conexões é um ponto inicial de medição, não uma meta de desempenho. O orçamento total considerará as três instâncias, workers, migrations e conexões do IdP.
-
-Validar os índices de consultas de resultado original, ledger, pendências e outbox com `EXPLAIN (ANALYZE, BUFFERS)` em dados de teste. A reserva da outbox precisa considerar leases expirados. `pg_stat_statements` poderá complementar a análise quando as consultas estiverem definidas.
-
-As duas apostas de 80.00 sobre saldo de 100.00 precisam ser serializadas por carteira. Ao mesmo tempo, operações em carteiras distintas devem avançar. O teste deve medir tanto a correção quanto a espera por locks e por conexão.
-
-## Workers e retry
-
-Consumidores SQS, publishers e processamento de referências terão limites próprios de concorrência e lote. A busca por mais trabalho acompanhará a capacidade de processamento para limitar filas em memória.
-
-O consumidor usará long polling, cujo limite é de 20 segundos segundo a [documentação do SQS](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-short-and-long-polling.html). `MessageGroupId` será definido por carteira. Locks PostgreSQL continuarão coordenando o processamento que chega por HTTP.
-
-| Situação | Tratamento a verificar |
+| Teste | Evidência exigida |
 | --- | --- |
-| Saldo insuficiente | Rejeição persistida, sem retry de negócio |
-| Referência ausente | Retry persistente com backoff até o limite definido |
-| Falha transitória de infraestrutura | Retry limitado com backoff e jitter |
-| Deadlock SQL | Nova tentativa da transação inteira, com limite |
-| Mensagem definitivamente inválida | Destino conforme a política documentada de DLQ |
-| Publicação sem confirmação local | Mesmo evento e mesmo identificador na nova tentativa |
+| `TestCrashAfterFinancialCommitReplaysOriginalResult` | Processo termina antes da resposta; outra instância devolve o saldo original após novos movimentos |
+| `TestCrashAfterSQSCommitRedeliversWithoutMovement` | Processo termina antes de remover a mensagem; outro recebe com `receiveCount >= 2`, confirma replay e preserva um único débito |
+| `TestCrashAfterEventPublicationUsesStableSnapshot` | Processo termina antes de confirmar a outbox; outro republica o mesmo ID e bytes, com nova tentativa persistida |
+| `TestMessagingRetentionOrderingAndLeaseFencing` | Lease expirado é reassumido; proprietário antigo não confirma; eventos da mesma carteira não se ultrapassam |
 
-Os testes devem reduzir a disponibilidade do banco ou broker e verificar limites de trabalho em execução, recuperação e encerramento dentro do prazo. Valores iniciais de concorrência serão definidos com a implementação e medidos antes de qualquer ajuste.
+A contagem de envio da outbox é observada nos logs e nas tentativas do banco. A fila FIFO pode suprimir a segunda entrega com o mesmo ID dentro de sua janela; esse comportamento não é tratado como prova de publicação exatamente uma vez. Os consumidores de eventos precisam deduplicar por `eventId`.
 
-## Métricas
+A restauração de referências é verificada pelo estado final e pelo único lançamento correspondente. A mensagem SQS só é removida depois do commit; pendências são continuadas pelo worker de referências.
 
-Instrumentar resultados por status, duração de processamento, replays, espera por lock, aquisição de conexão, tentativas dos workers, atraso da outbox e divergências de reconciliação. Medir uso do pool para distinguir falta de conexões de contenção por carteira.
+## Limites das evidências
 
-Labels usarão dimensões limitadas, como tipo e status. Identificadores de carteira, transação e mensagem ficarão nos logs, seguindo a [orientação de cardinalidade do Prometheus](https://prometheus.io/docs/practices/naming/#labels). O monitoramento de CPU, memória e containers poderá complementar essas medições.
+Esses cenários demonstram processos independentes no mesmo host e broker emulado. Não simulam perda de disco, cluster PostgreSQL, indisponibilidade regional da AWS ou todos os modos de falha de rede. A CI prepara o mesmo ambiente e executa a suíte com race detector; seu resultado remoto depende da execução no GitHub.
 
-## Integração contínua
+## Distribuição HTTP com Traefik
 
-Criar um workflow de GitHub Actions com formatação, dependências, `go vet`, testes e race detector. Um job de integração preparará PostgreSQL, Keycloak e LocalStack, executará migrations e publicará o resultado real dos testes.
+Traefik permanece como extensão de infraestrutura. A integridade entre processos já é testada diretamente por HTTP e SQS, sem depender de afinidade de sessão.
 
-Na CI, a suíte PostgreSQL usará o comando de integração já disponível. A inclusão do IdP e SQS acompanhará a implementação desses componentes. Concorrência, failover e benchmark terão comandos próprios quando os cenários estiverem completos.
+Uma futura composição com proxy deve encaminhar HTTP para três réplicas sem `container_name` fixo e usar `/health/ready` para retirar uma instância indisponível. O cliente pode repetir a operação em qualquer réplica. O proxy não deve repetir POST automaticamente. SQS continua entregando diretamente aos consumidores.
 
-## Benchmark
+O acesso ao Docker deve passar por socket proxy restrito, com dashboard e infraestrutura em redes adequadas. A demonstração deve observar três processos, interromper um, conferir o atendimento pelos outros e validar os replays após sua recuperação.
 
-Executar depois dos testes de integridade e recuperação. Registrar ambiente, versões, recursos, duração, carga e proporção de operações. Comparar os cenários com a mesma carga total:
+## Desempenho
 
-| Cenário | O que permite comparar |
+Ainda não há resultado de benchmark. A medição deve começar depois da integridade, com ambiente, recursos, versões, duração e proporção das operações registrados.
+
+| Carga equivalente | Objetivo |
 | --- | --- |
 | Uma instância e 100 carteiras | Referência de processamento |
-| Três instâncias e 100 carteiras | Efeito da distribuição em carteiras independentes |
-| Três instâncias e uma carteira disputada | Contenção necessária e preservação do saldo |
+| Três instâncias e 100 carteiras | Distribuição entre carteiras independentes |
+| Três instâncias e uma carteira | Custo da contenção necessária |
 
-Coletar throughput, taxa de erros, p50, p95, p99, espera por conexão, conflitos, atraso da outbox e divergências de ledger. A comparação precisa explicar as diferenças observadas. Não há meta mínima de RPS no desafio.
+Coletar throughput, erros, p50/p95/p99, tempo de aquisição de conexão e lock, conflitos, atraso da outbox e divergências. Verificar planos das consultas com `EXPLAIN (ANALYZE, BUFFERS)` antes de ajustar pools ou índices. O tamanho do pool é configurável e deve respeitar o orçamento total das instâncias e workers.
 
-## Ordem de entrega
-
-1. Concluir abertura e BET autenticadas, com atomicidade e idempotência.
-2. Demonstrar concorrência financeira entre três processos.
-3. Completar operações, SQS e recuperação com workers limitados.
-4. Executar failover pelo Traefik e interrupções controladas, com métricas e CI.
-5. Medir desempenho e registrar os resultados com a metodologia usada.
+As métricas implementadas fornecem latência, resultados, retries, conflitos e pendências. Os IDs ficam nos logs para evitar cardinalidade ilimitada. Números de desempenho só devem ser publicados a partir de execução registrada.

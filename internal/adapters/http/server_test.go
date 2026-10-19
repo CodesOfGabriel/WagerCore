@@ -80,7 +80,9 @@ func serverApp(address string, logger *slog.Logger) *fx.App {
 		fx.NopLogger,
 		fx.Supply(config.Config{HTTPAddr: address}),
 		fx.Supply(logger),
-		fx.Supply(httpapi.NewHealth(func(context.Context) error { return nil }, time.Second)),
+		fx.Provide(func() http.Handler {
+			return httpapi.NewHealth(func(context.Context) error { return nil }, time.Second).Routes()
+		}),
 		fx.Invoke(httpapi.RegisterServer),
 	)
 }

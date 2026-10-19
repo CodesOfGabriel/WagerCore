@@ -38,12 +38,14 @@ const (
 	AlreadyReversed           FailureCode = "ALREADY_REVERSED"
 	AmountMismatch            FailureCode = "AMOUNT_MISMATCH"
 	InfrastructureFailure     FailureCode = "INFRASTRUCTURE_FAILURE"
+	BalanceOverflow           FailureCode = "BALANCE_OVERFLOW"
+	WalletVersionExhausted    FailureCode = "WALLET_VERSION_EXHAUSTED"
 )
 
 func (code FailureCode) business() bool {
 	switch code {
 	case InsufficientFunds, ReversalInsufficientFunds, ReferenceNotFound,
-		ReferenceNotProcessed, ReferenceMismatch, AlreadyReversed, AmountMismatch:
+		ReferenceNotProcessed, ReferenceMismatch, AlreadyReversed, AmountMismatch, BalanceOverflow, WalletVersionExhausted:
 		return true
 	default:
 		return false
@@ -138,7 +140,7 @@ func (t *WagerTransaction) Validate() error {
 		return ErrInvalidTimestamp
 	}
 	if t.state.ResolvedReferenceID != "" {
-		if err := validateID(t.state.ResolvedReferenceID); err != nil {
+		if err := ValidateID(t.state.ResolvedReferenceID); err != nil {
 			return err
 		}
 		if t.state.ResolvedReferenceID == t.state.Input.ID || t.state.Input.ReferenceExternalTransactionID == "" {
@@ -190,7 +192,7 @@ func (t *WagerTransaction) Validate() error {
 
 func validateTransactionInput(input TransactionInput) error {
 	for _, id := range []string{input.ID, input.WalletID, input.PlayerID} {
-		if err := validateID(id); err != nil {
+		if err := ValidateID(id); err != nil {
 			return err
 		}
 	}

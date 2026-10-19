@@ -13,13 +13,13 @@ import (
 	"junglegaming/internal/platform/config"
 )
 
-func RegisterServer(lifecycle fx.Lifecycle, cfg config.Config, health *Health, logger *slog.Logger, shutdown fx.Shutdowner) {
+func RegisterServer(lifecycle fx.Lifecycle, cfg config.Config, handler http.Handler, logger *slog.Logger, shutdown fx.Shutdowner) {
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           health.Routes(),
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      10 * time.Second,
+		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    16 << 10,
 	}

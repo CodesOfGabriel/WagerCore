@@ -14,3 +14,39 @@ services:
       interval: 2s
       timeout: 3s
       retries: 20
+
+  keycloak-test:
+    image: quay.io/keycloak/keycloak:26.4.0
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_HOSTNAME: http://localhost:58081
+      KC_HEALTH_ENABLED: "true"
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: test-admin
+      JAVA_OPTS_KC_HEAP: -Xms128m -Xmx384m
+    ports:
+      - "127.0.0.1:58081:8080"
+    volumes:
+      - ./deployments/keycloak/realm.json:/opt/keycloak/data/import/wagercore-realm.json:ro
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/9000; printf \"GET /health/ready HTTP/1.0\\r\\n\\r\\n\" >&3; read -r response <&3; [[ $$response == *200* ]]'"]
+      interval: 3s
+      timeout: 3s
+      retries: 60
+      start_period: 15s
+
+  localstack-test:
+    image: localstack/localstack:4.4.0
+    environment:
+      SERVICES: sqs
+      AWS_DEFAULT_REGION: us-east-1
+      SQS_ENDPOINT_STRATEGY: dynamic
+    ports:
+      - "127.0.0.1:54566:4566"
+    volumes:
+      - ./deployments/localstack/init.sh:/etc/localstack/init/ready.d/init.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "awslocal sqs get-queue-url --queue-name integration-events.fifo >/dev/null"]
+      interval: 3s
+      timeout: 5s
+      retries: 40

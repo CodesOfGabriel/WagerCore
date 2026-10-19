@@ -44,7 +44,7 @@ func (e WalletLedgerEntry) Snapshot() LedgerSnapshot {
 
 func (e WalletLedgerEntry) Validate() error {
 	for _, id := range []string{e.state.ID, e.state.WalletID, e.state.TransactionID} {
-		if err := validateID(id); err != nil {
+		if err := ValidateID(id); err != nil {
 			return err
 		}
 	}

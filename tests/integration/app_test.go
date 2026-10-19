@@ -18,10 +18,12 @@ import (
 func TestApplicationLifecycleWithPostgres(t *testing.T) {
 	db := newDatabase(t, true)
 	var pool *pgxpool.Pool
+	cfg := config.Defaults()
+	cfg.HTTPAddr, cfg.DatabaseURL, cfg.HealthTimeout = "127.0.0.1:0", db.url(), time.Second
+	cfg.OIDCIssuerURL, cfg.OIDCJWKSURL = issuerURL(), issuerURL()+"/protocol/openid-connect/certs"
+	cfg.SQSEndpoint, cfg.WorkerRoles = brokerEndpoint(), "none"
 	app := bootstrap.New(
-		fx.Replace(config.Config{
-			HTTPAddr: "127.0.0.1:0", DatabaseURL: db.config.ConnString(), HealthTimeout: time.Second,
-		}),
+		fx.Replace(cfg),
 		fx.Replace(slog.New(slog.NewJSONHandler(io.Discard, nil))),
 		fx.Populate(&pool),
 	)
